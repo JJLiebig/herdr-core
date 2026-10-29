@@ -160,6 +160,9 @@ paths start at your current folder. Prefer explicit paths for remote work.
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary
   is already current. JSON reports `restarted: true`; terminals keep running.
+- Planned restarts and updates preserve the core's launch environment for new
+  terminals; per-terminal API `env` overrides still apply. A stop followed by a
+  fresh start uses the new launcher's environment.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include
