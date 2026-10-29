@@ -1,3 +1,39 @@
+# Personal fork rules
+
+This is `JJLiebig/herdr-core`, based on `herdrdev/herdr-core`. Within this
+repository's guidance, these rules override conflicting instructions below.
+The upstream instructions follow unchanged.
+
+- Keep the maintained difference from upstream small. Core stays a generic
+  runtime: agent names, session hooks and resume selection belong in personal
+  helpers, never in core. Status remains OSC 7501.
+- Keep fork logic in focused capability files under the owning module's
+  `herdr_local/` directory. Upstream files are integration seams: change only
+  the fields, declarations, schema entries and calls the capability needs.
+  Do not add abstractions or widen visibility just to isolate a few lines.
+- Fix only requested fork behavior, regressions it introduces and required
+  integration seams. Report unrelated upstream defects; review findings do not
+  expand scope. Ask before absorbing a larger upstream subsystem.
+- Preserve upstream commits with a real merge from `upstream/master`. Resolve
+  conflicts narrowly; do not rewrite upstream behavior or include cleanup.
+- Review only fork-authored changes or exact conflict resolutions, never the
+  full upstream integration. Use local review; do not request GitHub AI reviews.
+  Run relevant checks and required native gates; serialize heavy Rust builds.
+- Keep `FORK_LEDGER.md` as a current capability map, not a changelog. Update a
+  capability's owned files, required seams and retirement condition together.
+- User-approved private fork work does not wait for upstream approval. Changes
+  proposed to Can still follow his contribution and shared-API rules. Do not
+  open upstream issues or PRs unless requested.
+- Do not add fork branding, release pipelines, dependency churn or compatibility
+  layers without a concrete need. Reuse existing holders and recovery rules.
+- `origin` is the public fork. `private-archive` preserves the old private copy.
+  Never mirror-push or publish old private branches wholesale: deleted files
+  remain in history. Publish only audited changes based on public upstream.
+- Keep machine configuration, credentials, captured conversations and test
+  artifacts out of commits. Exercise recovery only in isolated core sessions.
+
+---
+
 # herdr-core
 
 If AGENTS.local.md exists, read it too: the maintainer's local rules.
