@@ -14,8 +14,9 @@ The upstream instructions follow unchanged.
 - Fix only requested fork behavior, regressions it introduces and required
   integration seams. Report unrelated upstream defects; review findings do not
   expand scope. Ask before absorbing a larger upstream subsystem.
-- Preserve upstream commits with a real merge from `upstream/master`. Resolve
-  conflicts narrowly; do not rewrite upstream behavior or include cleanup.
+- Merge `upstream/master` directly into this fork's `master` with a real merge
+  commit; no upstream-sync PR. Check affected fork seams and resolve conflicts
+  narrowly; do not rewrite upstream behavior or include cleanup.
 - Review only fork-authored changes or exact conflict resolutions, never the
   full upstream integration. Use local review; do not request GitHub AI reviews.
   Run relevant checks and required native gates; serialize heavy Rust builds.
