@@ -695,3 +695,59 @@ fn attach_types_into_the_program_and_detaches_on_its_key() {
     assert!(!screen.contains("[6;") && !screen.contains("^["), "a reply reached the program: {screen}");
     assert_eq!(s.json(&["get", &inner])["state"], "live");
 }
+
+#[test]
+fn explicit_recovery_uses_one_same_id_command_and_adopts_surviving_holders() {
+    use std::io::{BufRead, Write};
+    let s = Session::new();
+    let t = s.bg(&["--keep", "ping", "-n", "120", "127.0.0.1"]);
+    let dir = s.root.join("fixed recovery cwd");
+    std::fs::create_dir(&dir).unwrap();
+    let marker = dir.join("starts.txt");
+    let script =
+        s.file("recover.ps1", "Add-Content starts.txt 'start'\nWrite-Output 'RECOVERED-STATIC'\nStart-Sleep 100\n");
+    let state: Value = serde_json::from_slice(
+        &std::fs::read(s.root.join("state/herdr-core").join(&s.name).join("terminals.json")).unwrap(),
+    )
+    .unwrap();
+    let scope = state["terminals"]["1"]["scope"].as_str().unwrap();
+    let request = serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"terminal.keep", "params": {
+        "terminal":t, "keep":true, "expected_scope":scope,
+        "recovery":{"argv":["powershell", "-NoProfile", "-File", script], "cwd":dir.display().to_string()}
+    }});
+    let mut conn = cmd(&s.name, &s.root)
+        .arg("connect")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = conn.stdin.take().unwrap();
+    writeln!(input, "{request}").unwrap();
+    let mut reply = String::new();
+    std::io::BufReader::new(conn.stdout.take().unwrap()).read_line(&mut reply).unwrap();
+    drop(input);
+    conn.wait().unwrap();
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    assert!(reply["result"]["keep"].as_bool().unwrap_or(false), "{reply}");
+    assert!(reply["result"].get("recovery").is_none());
+    let old = s.json(&["get", &t])["pid"].as_u64().unwrap();
+    s.json(&["server", "restart"]);
+    assert_eq!(s.json(&["get", &t])["pid"], old, "planned handover adopts the holder");
+    assert!(!marker.exists());
+    let status = s.json(&["server", "status"]);
+    for pid in [status["pid"].as_u64().unwrap(), status["holder"]["pid"].as_u64().unwrap()] {
+        Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output().unwrap();
+    }
+    wait_until("recorded command recovers after core and holder loss", || {
+        let r = s.json(&["get", &t]);
+        r["state"] == "live" && r["pid"].as_u64().is_some_and(|p| p != old) && marker.exists()
+    });
+    s.shows(&t, "RECOVERED-STATIC");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
+    assert_eq!(s.json(&["get", &t])["cwd"], dir.display().to_string());
+    assert_eq!(s.json(&["ls"])["terminals"].as_array().unwrap().len(), 1);
+    s.json(&["server", "restart"]);
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1, "no duplicate on adoption");
+    assert_eq!(s.json(&["kill", &t])["reason"], "killed");
+    assert_eq!(s.json(&["get", &t])["state"], "finished");
+}

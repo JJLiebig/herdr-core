@@ -73,19 +73,11 @@ impl Core {
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
             let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
-            let cwd = t
-                .last_cwd
-                .as_ref()
-                .filter(|p| std::path::Path::new(p).is_dir())
-                .or_else(|| std::path::Path::new(&t.cwd).is_dir().then_some(&t.cwd))
-                .cloned()
-                .unwrap_or_else(|| {
-                    env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
-                });
+            let (argv, cwd) = t.recovery_command(&env);
             let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
             t.scope = Some(scope);
             t.holder = Some(instance);
-            t.argv = crate::platform::own_shell();
+            t.argv = argv;
             t.cwd = cwd.clone();
             t.template = None;
             t.reported = false;
