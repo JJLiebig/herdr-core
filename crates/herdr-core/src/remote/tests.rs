@@ -81,13 +81,23 @@ fn absent_native_session_stays_canonical_across_events_and_reconnects() {
         .create(crate::terminals::NewTerminal { argv: vec!["unused".into()], keep: true, ..Default::default() }, 0)
         .unwrap();
     registry.terminals.get_mut(&id).unwrap().reported = true;
+    // Keep the existing empty-record omission behavior out of this native-field regression.
+    registry
+        .terminals
+        .get_mut(&id)
+        .unwrap()
+        .records
+        .insert("child".into(), serde_json::from_value(json!({"state": "idle"})).unwrap());
     let mut record = serde_json::to_value(crate::terminals::Public(registry.terminals[&id].clone())).unwrap();
     assert!(record.get("resume_session").is_none());
     mirror_replace(&core, &machine, vec![record.clone()]);
     let (tx, mut events) = mpsc::unbounded_channel();
     core.subscribe(&mut core.lock(), Filter::default(), Sink::Waiter(tx));
     for (kind, data) in [
-        ("status", json!({"status": null, "records": {}, "reported": true, "resume_session": null})),
+        (
+            "status",
+            json!({"status": null, "records": {"child": {"state": "idle"}}, "reported": true, "resume_session": null}),
+        ),
         ("keep", json!({"keep": false, "resume_session": null})),
     ] {
         if kind == "keep" {
