@@ -513,11 +513,11 @@ fn apply(record: &mut Value, kind: &str, data: &Value) {
             set(record, &["reason", "exit_code", "signal", "finished_ms"]);
             record.as_object_mut().map(|r| r.remove("foreground"));
         }
-        "status" => set(record, &["status", "records", "reported"]),
+        "status" => set(record, &["status", "records", "reported", "resume_session"]),
         "turn" => set(record, &["turn"]),
         "title" => set(record, &["title"]),
         "labels" => set(record, &["labels"]),
-        "keep" => set(record, &["keep"]),
+        "keep" => set(record, &["keep", "resume_session"]),
         "size" => set(record, &["cols", "rows"]),
         "foreground" => record["foreground"] = data.clone(),
         _ => {}

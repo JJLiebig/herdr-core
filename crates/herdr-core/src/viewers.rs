@@ -163,13 +163,14 @@ impl Core {
 
     pub fn status_changed(&self, st: &mut State, id: u32, change: crate::status::Change) {
         let t = &st.reg.terminals[&id];
-        let (status, records, turn, reported) = (t.status.clone(), t.records.clone(), t.turn, t.reported);
+        let (status, records, turn, reported, resume_session) =
+            (t.status.clone(), t.records.clone(), t.turn, t.reported, t.resume_session.clone());
         if change.status {
             self.emit(
                 st,
                 "status",
                 id,
-                serde_json::json!({"status": status, "records": records, "reported": reported}),
+                serde_json::json!({"status": status, "records": records, "reported": reported, "resume_session": resume_session}),
             );
         }
         if change.turn_ended {
