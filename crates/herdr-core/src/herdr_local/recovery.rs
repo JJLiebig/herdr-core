@@ -19,28 +19,37 @@ pub struct Recovery {
     pub session_token: Option<String>,
 }
 
-fn osc_field<'a>(raw: &'a str, key: &str) -> Option<&'a str> {
-    let whitespace = [' ', '\t', '\n', '\r', '\x0b', '\x0c'];
-    raw.split(':')
+fn osc_trim(value: &[u8]) -> &[u8] {
+    let whitespace = b" \t\n\r\x0b\x0c";
+    let start = value.iter().position(|c| !whitespace.contains(c)).unwrap_or(value.len());
+    let end = value.iter().rposition(|c| !whitespace.contains(c)).map_or(start, |i| i + 1);
+    &value[start..end]
+}
+
+fn osc_field<'a>(raw: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    raw.split(|c| *c == b':')
         .filter_map(|field| {
-            let (field_key, value) = field.split_once('=')?;
-            (field_key.trim_matches(whitespace) == key).then(|| value.trim_matches(whitespace))
+            let equals = field.iter().position(|c| *c == b'=')?;
+            let (field_key, value) = field.split_at(equals);
+            (osc_trim(field_key) == key).then(|| osc_trim(&value[1..]))
         })
         .next_back()
         .filter(|s| !s.is_empty())
 }
 
-fn osc_value<'a>(raw: &'a str, key: &str) -> Option<&'a str> {
-    osc_field(raw, key).filter(|v| v.bytes().all(|c| c.is_ascii_alphanumeric() || b"_.+-,/=".contains(&c)))
+fn osc_value<'a>(raw: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    osc_field(raw, key).filter(|v| v.iter().all(|c| c.is_ascii_alphanumeric() || b"_.+-,/=".contains(c)))
 }
 
 impl Core {
     /// New live output only: replaying a tail could resurrect a deliberately reset session.
     pub(crate) fn bind_resume_session(&self, st: &mut State, id: u32, report: &ghostty_vt::StatusReport) {
-        if !report.id.is_empty() || report.state == "clear" || osc_field(&report.raw, "id").is_some() {
+        if !report.id.is_empty() || report.state == "clear" || osc_field(&report.raw, b"id").is_some() {
             return;
         }
-        let Some(session) = osc_value(&report.raw, "session") else { return };
+        let Some(session) = osc_value(&report.raw, b"session").and_then(|v| std::str::from_utf8(v).ok()) else {
+            return;
+        };
         let Some(t) = st
             .reg
             .terminals
@@ -52,7 +61,7 @@ impl Core {
         let Some(token) = t.recovery.as_ref().and_then(|r| r.session_token.as_deref()).filter(|t| !t.is_empty()) else {
             return;
         };
-        if osc_value(&report.raw, "sessiontoken") != Some(token) {
+        if osc_value(&report.raw, b"sessiontoken") != Some(token.as_bytes()) {
             return;
         }
         if t.resume_session.as_deref() == Some(session) {
@@ -397,6 +406,31 @@ mod tests {
                 core.output(&mut st, id, "holder", format!("\x1b]7501;{body}\x07").as_bytes());
                 assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("primary"));
             }
+            for body in [
+                b"\x1b]7501;state=working:id=child\xff:session=wrong:sessiontoken=current-token\x07".as_slice(),
+                b"\x1b]7501;state=working:session=wrong\xff:sessiontoken=current-token\x07".as_slice(),
+                b"\x1b]7501;state=working:session=wrong:sessiontoken=current-token\xff\x07".as_slice(),
+            ] {
+                core.output(&mut st, id, "holder", body);
+                assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("primary"));
+            }
+            core.output(
+                &mut st,
+                id,
+                "holder",
+                b"\x1b]7501;state=working:unknown=\xff:session=through-binary:sessiontoken=current-token\x07",
+            );
+            assert_eq!(
+                disk_session().as_deref(),
+                Some("through-binary"),
+                "unknown binary fields do not suppress selected values"
+            );
+            core.output(
+                &mut st,
+                id,
+                "holder",
+                b"\x1b]7501;state=working:session=primary:sessiontoken=current-token\x07",
+            );
             std::fs::create_dir(core.paths.state.join("terminals.tmp")).unwrap();
             core.output(
                 &mut st,

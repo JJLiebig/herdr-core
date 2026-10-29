@@ -264,7 +264,7 @@ const DEFAULT_BG: Rgb = [0x28, 0x2c, 0x34];
 
 pub type Rgb = [u8; 3];
 
-/// One OSC 7501 report, exactly as the program sent it (strings decoded).
+/// One OSC 7501 report, with known string fields decoded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatusReport {
     /// idle, working, done, blocked, error, or clear (remove records).
@@ -278,8 +278,9 @@ pub struct StatusReport {
     pub app: String,
     pub title: String,
     pub message: String,
-    /// Validated original body after `7501;`, copied during the callback.
-    pub raw: String,
+    /// Original validated body bytes after `7501;`, copied during the callback.
+    /// Unknown fields may contain non-UTF-8 bytes.
+    pub raw: Vec<u8>,
 }
 
 /// What the terminal answers on the program's behalf, set by the core.
@@ -306,11 +307,15 @@ extern "C" fn on_write_pty(_: ffi::Terminal, ud: *mut c_void, data: *const u8, l
     hooks.responses.extend_from_slice(unsafe { std::slice::from_raw_parts(data, len) });
 }
 
-fn string(s: &ffi::Str) -> String {
+fn bytes(s: &ffi::Str) -> &[u8] {
     if s.ptr.is_null() {
-        return String::new();
+        return &[];
     }
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    unsafe { std::slice::from_raw_parts(s.ptr, s.len) }
+}
+
+fn string(s: &ffi::Str) -> String {
+    String::from_utf8_lossy(bytes(s)).into_owned()
 }
 
 extern "C" fn on_program_status(_: ffi::Terminal, ud: *mut c_void, r: *const ffi::ProgramStatus) {
@@ -325,7 +330,7 @@ extern "C" fn on_program_status(_: ffi::Terminal, ud: *mut c_void, r: *const ffi
         app: string(&r.app),
         title: string(&r.title),
         message: string(&r.message),
-        raw: string(&r.raw),
+        raw: bytes(&r.raw).to_vec(),
     });
 }
 
@@ -854,12 +859,15 @@ mod tests {
     fn program_status_reports_and_title_changes_reach_us() {
         let mut t = Terminal::new(80, 24, 1 << 20);
         t.write(b"\x1b]7501;state=work");
-        t.write(b"ing:app=claude-code:progress=40:session=opaque-id\x1b\\");
+        t.write(b"ing:app=claude-code:progress=40:session=opaque-id:unknown=\xff\x1b\\");
         t.write(b"\x1b]7501;state=blocked:kind=permission:id=a/b:msg=QXBwbHk/\x07");
         t.write(b"\x1b]7501;state=clear\x1b\\\x1b]7501;state=bogus\x1b\\");
         let reports = t.take_status_reports();
         assert_eq!(reports.len(), 3, "{reports:?}");
-        assert_eq!(reports[0].raw, "state=working:app=claude-code:progress=40:session=opaque-id");
+        assert_eq!(
+            reports[0].raw,
+            b"state=working:app=claude-code:progress=40:session=opaque-id:unknown=\xff".to_vec()
+        );
         assert_eq!(
             (reports[0].state, reports[0].progress, reports[0].app.as_str()),
             ("working", Some(40), "claude-code")
