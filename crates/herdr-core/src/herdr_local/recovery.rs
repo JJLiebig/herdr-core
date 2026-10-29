@@ -14,9 +14,6 @@ use std::sync::atomic::Ordering;
 pub struct Recovery {
     pub argv: Vec<String>,
     pub cwd: String,
-    /// Opaque invocation correlation token required for native session reports.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_token: Option<String>,
 }
 
 fn osc_trim(value: &[u8]) -> &[u8] {
@@ -58,12 +55,6 @@ impl Core {
         else {
             return;
         };
-        let Some(token) = t.recovery.as_ref().and_then(|r| r.session_token.as_deref()).filter(|t| !t.is_empty()) else {
-            return;
-        };
-        if osc_value(&report.raw, b"sessiontoken") != Some(token.as_bytes()) {
-            return;
-        }
         if t.resume_session.as_deref() == Some(session) {
             return;
         }
@@ -145,8 +136,7 @@ impl Core {
 
 impl Terminal {
     pub(crate) fn prepare_recovery(&mut self, env: &BTreeMap<String, String>) -> (Vec<String>, String) {
-        if let Some(recovery) = &mut self.recovery {
-            recovery.session_token = None;
+        if let Some(recovery) = &self.recovery {
             return (recovery.argv.clone(), recovery.cwd.clone());
         }
         let cwd = self
@@ -191,11 +181,7 @@ mod tests {
             t.pid = Some(1);
             id
         };
-        let recovery = Recovery {
-            argv: vec!["helper".into(), "--recover".into()],
-            cwd: root.display().to_string(),
-            session_token: None,
-        };
+        let recovery = Recovery { argv: vec!["helper".into(), "--recover".into()], cwd: root.display().to_string() };
         let params = || KeepParams {
             terminal: "t1".into(),
             keep: true,
@@ -215,7 +201,7 @@ mod tests {
             (vec!["helper".into()], "missing-relative".into()),
         ] {
             let mut invalid = params();
-            invalid.recovery = Some(Recovery { argv, cwd, session_token: None });
+            invalid.recovery = Some(Recovery { argv, cwd });
             assert!(core.set_keep(id, invalid).is_err());
         }
         for state in ["lost", "finished", "stopping", "killing"] {
@@ -295,11 +281,7 @@ mod tests {
         let mut reg = crate::terminals::Registry::default();
         let id = reg.create(NewTerminal { argv: vec!["unused".into()], ..Default::default() }, 0).unwrap();
         let t = reg.terminals.get_mut(&id).unwrap();
-        t.recovery = Some(Recovery {
-            argv: vec!["helper".into(), "--recover".into()],
-            cwd: "gone-folder".into(),
-            session_token: None,
-        });
+        t.recovery = Some(Recovery { argv: vec!["helper".into(), "--recover".into()], cwd: "gone-folder".into() });
         assert_eq!(
             t.prepare_recovery(&BTreeMap::new()),
             (vec!["helper".into(), "--recover".into()], "gone-folder".into())
@@ -327,23 +309,14 @@ mod tests {
             t.pid = Some(1);
             t.keep = true;
             st.screens.insert(id, ghostty_vt::Terminal::new(80, 24, 1 << 20));
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:session=unregistered:sessiontoken=current-token\x07",
-            );
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=unregistered\x07");
             assert!(st.reg.terminals[&id].resume_session.is_none());
             id
         };
         let register = || KeepParams {
             terminal: "t1".into(),
             keep: true,
-            recovery: Some(Recovery {
-                argv: vec!["helper".into()],
-                cwd: root.display().to_string(),
-                session_token: Some("current-token".into()),
-            }),
+            recovery: Some(Recovery { argv: vec!["helper".into()], cwd: root.display().to_string() }),
             expected_scope: Some("current".into()),
         };
         let off = || KeepParams {
@@ -352,19 +325,6 @@ mod tests {
             recovery: None,
             expected_scope: Some("current".into()),
         };
-        let mut ordinary = register();
-        ordinary.recovery.as_mut().unwrap().session_token = None;
-        core.set_keep(id, ordinary).unwrap();
-        {
-            let mut st = core.lock();
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:session=unregistered:sessiontoken=current-token\x07",
-            );
-            assert!(st.reg.terminals[&id].resume_session.is_none(), "ordinary recipes do not bind native sessions");
-        }
         core.set_keep(id, register()).unwrap();
         let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
         core.subscribe(&mut core.lock(), crate::events::Filter::default(), crate::events::Sink::Waiter(tx));
@@ -375,14 +335,9 @@ mod tests {
         };
         {
             let mut st = core.lock();
-            core.output(
-                &mut st,
-                id,
-                "stale-holder",
-                b"\x1b]7501;state=working:session=stale:sessiontoken=current-token\x07",
-            );
+            core.output(&mut st, id, "stale-holder", b"\x1b]7501;state=working:session=stale\x07");
             assert!(st.reg.terminals[&id].resume_session.is_none());
-            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:sessiontoken=wrong: sessiontoken = current-token :session=first: session = pri");
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=first: session = pri");
             assert!(st.reg.terminals[&id].resume_session.is_none());
             core.output(&mut st, id, "holder", b"mary  \x1b\\");
             assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("primary"));
@@ -391,108 +346,62 @@ mod tests {
             assert_eq!(event["data"]["resume_session"], "primary");
             assert_eq!(disk_session().as_deref(), Some("primary"), "same status word still saves identity immediately");
             for body in [
-                "state=working:id=child:session=wrong:sessiontoken=current-token",
-                "state=working:id=child?:session=wrong:sessiontoken=current-token",
-                "state=working:session=bad?:sessiontoken=current-token",
-                "state=working:session=wrong:session=bad?:sessiontoken=current-token",
-                "state=clear:session=wrong:sessiontoken=current-token",
-                "state=working:session=:sessiontoken=current-token",
-                "state=working:sessiontoken=current-token",
-                "state=working:session=wrong: session = :sessiontoken=current-token",
-                "state=working:session=wrong",
-                "state=working:session=wrong:sessiontoken=wrong",
-                "state=working:session=wrong:sessiontoken=current-token: sessiontoken = ",
+                "state=working:id=child:session=wrong",
+                "state=working:id=child?:session=wrong",
+                "state=working:session=bad?",
+                "state=working:session=wrong:session=bad?",
+                "state=clear:session=wrong",
+                "state=working:session=",
+                "state=working",
+                "state=working:session=wrong: session = ",
             ] {
                 core.output(&mut st, id, "holder", format!("\x1b]7501;{body}\x07").as_bytes());
                 assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("primary"));
             }
             for body in [
-                b"\x1b]7501;state=working:id=child\xff:session=wrong:sessiontoken=current-token\x07".as_slice(),
-                b"\x1b]7501;state=working:session=wrong\xff:sessiontoken=current-token\x07".as_slice(),
-                b"\x1b]7501;state=working:session=wrong:sessiontoken=current-token\xff\x07".as_slice(),
+                b"\x1b]7501;state=working:id=child\xff:session=wrong\x07".as_slice(),
+                b"\x1b]7501;state=working:session=wrong\xff\x07".as_slice(),
             ] {
                 core.output(&mut st, id, "holder", body);
                 assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("primary"));
             }
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:unknown=\xff:session=through-binary:sessiontoken=current-token\x07",
-            );
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:unknown=\xff:session=through-binary\x07");
             assert_eq!(
                 disk_session().as_deref(),
                 Some("through-binary"),
                 "unknown binary fields do not suppress selected values"
             );
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:session=primary:sessiontoken=current-token\x07",
-            );
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=primary\x07");
             std::fs::create_dir(core.paths.state.join("terminals.tmp")).unwrap();
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:session=changed:sessiontoken=current-token\x07",
-            );
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=changed\x07");
             let public = serde_json::to_value(Public(st.reg.terminals[&id].clone())).unwrap();
             assert_eq!(public["resume_session"], "primary");
             assert_eq!(disk_session().as_deref(), Some("primary"));
             std::fs::remove_dir(core.paths.state.join("terminals.tmp")).unwrap();
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:session=changed:sessiontoken=current-token\x07",
-            );
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=changed\x07");
             assert_eq!(disk_session().as_deref(), Some("changed"));
             // Native binding adds no immediate write for an unchanged ID; ordinary deferred status saving stays unchanged.
             let registry = core.paths.state.join("terminals.json");
             let saved = core.paths.state.join("saved.json");
             std::fs::rename(&registry, &saved).unwrap();
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:session=changed:sessiontoken=current-token\x07",
-            );
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=changed\x07");
             assert!(!registry.exists());
             std::fs::rename(&saved, &registry).unwrap();
-            // Start an old report before the explicit reset, and complete it after the next invocation registers.
-            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:sessiontoken=current-token:session=old-");
         }
         core.set_keep(id, off()).unwrap();
-        let mut next = register();
-        next.recovery.as_mut().unwrap().session_token = Some("next-token".into());
-        core.set_keep(id, next).unwrap();
+        core.set_keep(id, register()).unwrap();
         {
             let mut st = core.lock();
-            core.output(&mut st, id, "holder", b"partial\x07");
-            assert!(st.reg.terminals[&id].resume_session.is_none(), "old partial report cannot cross reset");
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:session=old-complete:sessiontoken=current-token\x07",
-            );
-            assert!(st.reg.terminals[&id].resume_session.is_none(), "old queued complete report cannot cross reset");
-            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=changed:sessiontoken=next-token\x07");
+            assert!(st.reg.terminals[&id].resume_session.is_none());
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=next-main\x07");
+            assert_eq!(disk_session().as_deref(), Some("next-main"));
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=changed\x07");
             assert_eq!(disk_session().as_deref(), Some("changed"));
         }
-        // Recovery rotates the token without erasing the last durable native identity.
+        // Recovery registration preserves the latest durable main identity.
         assert_eq!(core.set_keep(id, register()).unwrap().0.resume_session.as_deref(), Some("changed"));
         {
             let mut st = core.lock();
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:session=stale-recovery:sessiontoken=next-token\x07",
-            );
-            assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
             for reason in ["holder_lost", "server_stop"] {
                 st.reg.terminals.get_mut(&id).unwrap().holder = Some("holder".into());
                 st.screens.insert(id, ghostty_vt::Terminal::new(80, 24, 1 << 20));
@@ -502,28 +411,13 @@ mod tests {
                 assert!(st.reg.terminals[&id].status.is_none());
                 assert!(st.reg.terminals[&id].holder.is_none());
                 assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
-                core.output(
-                    &mut st,
-                    id,
-                    "holder",
-                    b"\x1b]7501;state=working:session=late:sessiontoken=current-token\x07",
-                );
+                core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=late\x07");
                 assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
             }
-            // A replacement claim must invalidate the old token before its helper can re-register.
             let t = st.reg.terminals.get_mut(&id).unwrap();
             t.prepare_recovery(&BTreeMap::new());
-            assert!(t.recovery.as_ref().unwrap().session_token.is_none());
             assert_eq!(t.resume_session.as_deref(), Some("changed"));
             t.holder = Some("holder".into());
-            st.screens.insert(id, ghostty_vt::Terminal::new(80, 24, 1 << 20));
-            core.output(
-                &mut st,
-                id,
-                "holder",
-                b"\x1b]7501;state=working:session=late-before-registration:sessiontoken=current-token\x07",
-            );
-            assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
         }
         while events.try_recv().is_ok() {}
         std::fs::create_dir(core.paths.state.join("terminals.tmp")).unwrap();

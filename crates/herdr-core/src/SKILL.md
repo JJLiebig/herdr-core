@@ -165,22 +165,17 @@ paths start at your current folder. Prefer explicit paths for remote work.
   selection is done by core. Omit recovery to preserve the choice; `keep: false`
   clears it. Supply `expected_scope` on cleanup too: a stale, lost or stopping program cannot change keep.
   Ordinary exit/kill stay final, and surviving holders are adopted.
-  Native session binding also requires a fresh opaque `recovery.session_token` for
-  each invocation. Live root OSC 7501 reports must include matching `sessiontoken=`
-  and a nonempty `session=` value. The last occurrence of each key wins, with OSC
-  whitespace rules; absent/empty values, child records and `state=clear` leave the
-  binding unchanged. Values use the existing OSC ASCII value alphabet, not vendor
-  ID validation. Tokens correlate reports, never authorize commands. Recipes
-  without a token do not capture native sessions. Public `resume_session` changes
-  only after it is saved; existing status/keep events carry it too. Status reset
-  and loss preserve it; `keep: false` atomically clears it. Explicit new/resume
-  invocations clear keep before registering a new token and recovery command;
-  recovery rotates the token without clearing the durable binding. Preparing a
-  new recovered spawn invalidates the prior token before its helper registers.
-  Replayed
-  complete reports never set it; old-invocation partial reports fail the token
-  check when completed. OSC has no acknowledgement: a report never processed,
-  or a failed write (logged by core), does not establish durability.
+  Live root OSC 7501 reports with a nonempty `session=` value update the
+  latest main-session binding while an explicit recovery command is registered.
+  The last occurrence of a key wins, with OSC whitespace rules; absent/empty
+  values, child records and `state=clear` leave the binding unchanged. Values
+  use the existing OSC ASCII value alphabet, not vendor ID validation.
+  Public `resume_session` changes only after it is saved; existing status/keep
+  events carry it too. Status reset and loss preserve it; `keep: false`
+  atomically clears it. Explicit new/resume invocations clear keep before
+  registering their recovery command; recovery preserves the durable binding.
+  Replayed complete reports never set it. OSC has no acknowledgement: a report
+  never processed, or a failed write (logged by core), does not establish durability.
 
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.

@@ -623,13 +623,6 @@
           },
           "cwd": {
             "type": "string"
-          },
-          "session_token": {
-            "description": "Opaque invocation correlation token required for native session reports.",
-            "type": [
-              "string",
-              "null"
-            ]
           }
         },
         "required": [
