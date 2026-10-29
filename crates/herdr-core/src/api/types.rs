@@ -315,6 +315,12 @@ pub struct KeepParams {
     /// Keep this live terminal after loss. Existing streams end with the loss reason; reattach after `restarted`.
     #[arg(long = "off", action = clap::ArgAction::SetFalse, default_value_t = true)]
     pub keep: bool,
+    /// Direct command to recover after loss (API only); requires expected_scope and keep=true.
+    #[arg(skip)]
+    pub recovery: Option<crate::herdr_local::recovery::Recovery>,
+    /// The current program's inherited HC_SCOPE; when supplied, guards any keep mutation (API only).
+    #[arg(skip)]
+    pub expected_scope: Option<String>,
 }
 
 #[derive(Serialize, JsonSchema)]

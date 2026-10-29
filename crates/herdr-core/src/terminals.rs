@@ -22,6 +22,8 @@ pub struct Terminal {
     #[serde(default)]
     pub keep: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery: Option<crate::herdr_local::recovery::Recovery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cwd: Option<String>,
     /// Only caller overrides, never the inherited core environment.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -256,6 +258,7 @@ impl Registry {
                 argv: new.argv,
                 cwd: new.cwd,
                 keep: new.keep,
+                recovery: None,
                 last_cwd: None,
                 restart_env: BTreeMap::new(),
                 restart_after_ms: 0,
@@ -409,6 +412,7 @@ const PRIVATE: &[&str] = &[
     "afar",
     "last_cwd",
     "restart_env",
+    "recovery",
     "restart_after_ms",
     "restart_delay_ms",
     "program_started_ms",

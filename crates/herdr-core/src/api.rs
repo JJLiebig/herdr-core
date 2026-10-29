@@ -84,7 +84,7 @@ methods! { Ctx<'_>;
         "Remove a finished terminal.",
         errors ["not_found", "machine_unknown", "live"];
     "terminal.keep" => terminal_keep, KeepParams => Public,
-        "Set whether a live terminal restarts as a shell after loss, including death by signal without an exit code. Exit with a code and explicit kill close it. Recovery runs on every OS after a grace delay, except while the core stops/restarts or Windows reports session shutdown. Streams end on loss; reattach after restarted.", errors ["not_found", "invalid_params"];
+        "Set whether a live terminal restarts as a shell after loss, including death by signal without an exit code. Exit with a code and explicit kill close it. Recovery runs on every OS after a grace delay, except while the core stops/restarts or Windows reports session shutdown. Streams end on loss; reattach after restarted.", errors ["not_found", "invalid_params", "unavailable"];
     "terminal.label" => terminal_label, LabelParams => Public,
         "Set or remove labels (free-form `key=value`, never interpreted).",
         errors ["not_found", "machine_unknown", "invalid_params"];
@@ -301,21 +301,7 @@ async fn terminal_rm(core: Ctx<'_>, p: TerminalParams) -> Result<RemoveResult, R
 
 async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError> {
     let id = resolve(core, &p.terminal)?;
-    let mut st = core.lock();
-    let t = st.reg.terminals.get_mut(&id).expect("resolved");
-    if !t.is_live() {
-        return Err(RpcError::invalid_params("only live terminals can be kept"));
-    }
-    t.keep = p.keep;
-    let public = Public(t.clone());
-    let lost = (!p.keep && t.holder.is_none()).then(|| t.reason.clone().unwrap_or_else(|| "holder_lost".into()));
-    core.emit(&mut st, "keep", id, json!({"keep": p.keep}));
-    if let Some(reason) = lost {
-        core.record_finish(&mut st, id, proto::Exit { code: None, signal: None }, &reason);
-        core.changed.notify_waiters();
-    }
-    core.save(&st);
-    Ok(public)
+    core.set_keep(id, p)
 }
 
 async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcError> {

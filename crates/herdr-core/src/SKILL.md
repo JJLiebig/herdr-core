@@ -156,6 +156,16 @@ paths start at your current folder. Prefer explicit paths for remote work.
   without an exit code is loss too. After a grace delay, recovery runs on
   every OS. Streams end on loss; reattach after the restarted event.
   Pending input/attach may be unavailable: retry after recovery.
+  Private fork API: `terminal.keep` accepts `recovery: {argv: [...], cwd: "/absolute/path"}`
+  with `keep: true` and `expected_scope` equal to the registering program's inherited
+  `HC_SCOPE`. Register before starting the managed program; success means the choice
+  was saved. Lost/finished or stopping programs and stale scopes are rejected. The
+  command runs directly in that fixed cwd after loss, using the same terminal ID;
+  missing commands/folders retry under the existing keep policy. No vendor/session
+  selection is done by core. Omit recovery to preserve the choice; `keep: false`
+  clears it. Supply `expected_scope` on cleanup too: a stale, lost or stopping program cannot change keep.
+  Ordinary exit/kill stay final, and surviving holders are adopted.
+
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary

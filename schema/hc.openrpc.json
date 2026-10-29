@@ -613,6 +613,24 @@
         ],
         "type": "object"
       },
+      "Recovery": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "argv",
+          "cwd"
+        ],
+        "type": "object"
+      },
       "RemoveResult": {
         "properties": {
           "removed": {
@@ -1993,11 +2011,30 @@
             "kind": "invalid_params"
           },
           "message": "invalid_params"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "unavailable"
+          },
+          "message": "unavailable"
         }
       ],
       "name": "terminal.keep",
       "paramStructure": "by-name",
       "params": [
+        {
+          "description": "The current program's inherited HC_SCOPE; when supplied, guards any keep mutation (API only).",
+          "name": "expected_scope",
+          "required": false,
+          "schema": {
+            "description": "The current program's inherited HC_SCOPE; when supplied, guards any keep mutation (API only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         {
           "description": "Keep this live terminal after loss. Existing streams end with the loss reason; reattach after `restarted`.",
           "name": "keep",
@@ -2005,6 +2042,22 @@
           "schema": {
             "description": "Keep this live terminal after loss. Existing streams end with the loss reason; reattach after `restarted`.",
             "type": "boolean"
+          }
+        },
+        {
+          "description": "Direct command to recover after loss (API only); requires expected_scope and keep=true.",
+          "name": "recovery",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Recovery"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Direct command to recover after loss (API only); requires expected_scope and keep=true."
           }
         },
         {
