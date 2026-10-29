@@ -30,13 +30,17 @@ fn osc_field<'a>(raw: &'a str, key: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
+fn osc_value<'a>(raw: &'a str, key: &str) -> Option<&'a str> {
+    osc_field(raw, key).filter(|v| v.bytes().all(|c| c.is_ascii_alphanumeric() || b"_.+-,/=".contains(&c)))
+}
+
 impl Core {
     /// New live output only: replaying a tail could resurrect a deliberately reset session.
     pub(crate) fn bind_resume_session(&self, st: &mut State, id: u32, report: &ghostty_vt::StatusReport) {
-        if !report.id.is_empty() || report.state == "clear" {
+        if !report.id.is_empty() || report.state == "clear" || osc_field(&report.raw, "id").is_some() {
             return;
         }
-        let Some(session) = osc_field(&report.raw, "session") else { return };
+        let Some(session) = osc_value(&report.raw, "session") else { return };
         let Some(t) = st
             .reg
             .terminals
@@ -48,7 +52,7 @@ impl Core {
         let Some(token) = t.recovery.as_ref().and_then(|r| r.session_token.as_deref()).filter(|t| !t.is_empty()) else {
             return;
         };
-        if osc_field(&report.raw, "sessiontoken") != Some(token) {
+        if osc_value(&report.raw, "sessiontoken") != Some(token) {
             return;
         }
         if t.resume_session.as_deref() == Some(session) {
@@ -131,8 +135,9 @@ impl Core {
 }
 
 impl Terminal {
-    pub(crate) fn recovery_command(&self, env: &BTreeMap<String, String>) -> (Vec<String>, String) {
-        if let Some(recovery) = &self.recovery {
+    pub(crate) fn prepare_recovery(&mut self, env: &BTreeMap<String, String>) -> (Vec<String>, String) {
+        if let Some(recovery) = &mut self.recovery {
+            recovery.session_token = None;
             return (recovery.argv.clone(), recovery.cwd.clone());
         }
         let cwd = self
@@ -287,7 +292,7 @@ mod tests {
             session_token: None,
         });
         assert_eq!(
-            t.recovery_command(&BTreeMap::new()),
+            t.prepare_recovery(&BTreeMap::new()),
             (vec!["helper".into(), "--recover".into()], "gone-folder".into())
         );
     }
@@ -378,6 +383,9 @@ mod tests {
             assert_eq!(disk_session().as_deref(), Some("primary"), "same status word still saves identity immediately");
             for body in [
                 "state=working:id=child:session=wrong:sessiontoken=current-token",
+                "state=working:id=child?:session=wrong:sessiontoken=current-token",
+                "state=working:session=bad?:sessiontoken=current-token",
+                "state=working:session=wrong:session=bad?:sessiontoken=current-token",
                 "state=clear:session=wrong:sessiontoken=current-token",
                 "state=working:session=:sessiontoken=current-token",
                 "state=working:sessiontoken=current-token",
@@ -468,7 +476,20 @@ mod tests {
                 );
                 assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
             }
-            st.reg.terminals.get_mut(&id).unwrap().holder = Some("holder".into());
+            // A replacement claim must invalidate the old token before its helper can re-register.
+            let t = st.reg.terminals.get_mut(&id).unwrap();
+            t.prepare_recovery(&BTreeMap::new());
+            assert!(t.recovery.as_ref().unwrap().session_token.is_none());
+            assert_eq!(t.resume_session.as_deref(), Some("changed"));
+            t.holder = Some("holder".into());
+            st.screens.insert(id, ghostty_vt::Terminal::new(80, 24, 1 << 20));
+            core.output(
+                &mut st,
+                id,
+                "holder",
+                b"\x1b]7501;state=working:session=late-before-registration:sessiontoken=current-token\x07",
+            );
+            assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
         }
         while events.try_recv().is_ok() {}
         std::fs::create_dir(core.paths.state.join("terminals.tmp")).unwrap();

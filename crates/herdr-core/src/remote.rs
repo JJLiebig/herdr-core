@@ -522,6 +522,9 @@ fn apply(record: &mut Value, kind: &str, data: &Value) {
         "foreground" => record["foreground"] = data.clone(),
         _ => {}
     }
+    if record.get("resume_session").is_some_and(Value::is_null) {
+        record.as_object_mut().map(|r| r.remove("resume_session"));
+    }
 }
 
 /// What a machine may ask of terminals here that are parents of its own.

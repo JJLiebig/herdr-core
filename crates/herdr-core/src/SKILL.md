@@ -169,12 +169,15 @@ paths start at your current folder. Prefer explicit paths for remote work.
   each invocation. Live root OSC 7501 reports must include matching `sessiontoken=`
   and a nonempty `session=` value. The last occurrence of each key wins, with OSC
   whitespace rules; absent/empty values, child records and `state=clear` leave the
-  binding unchanged. Tokens correlate reports, never authorize commands. Recipes
+  binding unchanged. Values use the existing OSC ASCII value alphabet, not vendor
+  ID validation. Tokens correlate reports, never authorize commands. Recipes
   without a token do not capture native sessions. Public `resume_session` changes
   only after it is saved; existing status/keep events carry it too. Status reset
   and loss preserve it; `keep: false` atomically clears it. Explicit new/resume
   invocations clear keep before registering a new token and recovery command;
-  recovery rotates the token without clearing the durable binding. Replayed
+  recovery rotates the token without clearing the durable binding. Preparing a
+  new recovered spawn invalidates the prior token before its helper registers.
+  Replayed
   complete reports never set it; old-invocation partial reports fail the token
   check when completed. OSC has no acknowledgement: a report never processed,
   or a failed write (logged by core), does not establish durability.
