@@ -99,10 +99,10 @@ Each event's `data`, and how to apply it to a snapshot:
 | `created` | the whole `Terminal` record | add it |
 | `lost` | `{reason, exit_code, signal, finished_ms: null}` | kept terminal remains `live`; set these, clear `pid` and drop `foreground` |
 | `restarted` | the whole `Terminal` record | replace it; reattach to the new shell |
-| `keep` | `{keep}` | set `keep` |
+| `keep` | `{keep, resume_session}` | set both |
 | `finished` | `{reason, exit_code, signal, finished_ms}` | set `state: "finished"` and these, and drop `foreground`; status is cleared just before (a `status` event) |
 | `removed` | `{}` | drop it |
-| `status` | `{status, records, reported}`: the root status (null when cleared), every record by key, whether it ever reported | replace all three |
+| `status` | `{status, records, reported, resume_session}`: the root status (null when cleared), every record by key, whether it ever reported, and the durable native session binding | replace all four |
 | `turn` | `{turn, state}`: the turn counter after a turn ended, and the word it ended on | set `turn` |
 | `title` | `{title}` | set `title` |
 | `labels` | `{labels}`: all labels now; plus `record` (the whole `Terminal`) when it newly matches your filter | replace `labels`; with `record`, add it; with a label filter, a terminal that no longer matches leaves your view (you still get this event) |

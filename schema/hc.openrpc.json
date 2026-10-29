@@ -786,6 +786,13 @@
             "description": "Whether the program ever sent a 7501 report.",
             "type": "boolean"
           },
+          "resume_session": {
+            "description": "Last successfully saved opaque session reported by the registered kept recovery program.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "rm": {
             "default": false,
             "description": "Removed right after it exits (once a waiting parent has the exit code).",
@@ -1241,6 +1248,13 @@
             "default": false,
             "description": "Whether the program ever sent a 7501 report.",
             "type": "boolean"
+          },
+          "resume_session": {
+            "description": "Last successfully saved opaque session reported by the registered kept recovery program.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "rm": {
             "default": false,

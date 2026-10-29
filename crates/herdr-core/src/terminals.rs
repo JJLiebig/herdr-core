@@ -23,6 +23,9 @@ pub struct Terminal {
     pub keep: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) recovery: Option<crate::herdr_local::recovery::Recovery>,
+    /// Last successfully saved opaque session reported by the registered kept recovery program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cwd: Option<String>,
     /// Only caller overrides, never the inherited core environment.
@@ -259,6 +262,7 @@ impl Registry {
                 cwd: new.cwd,
                 keep: new.keep,
                 recovery: None,
+                resume_session: None,
                 last_cwd: None,
                 restart_env: BTreeMap::new(),
                 restart_after_ms: 0,

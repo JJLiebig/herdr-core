@@ -83,7 +83,10 @@ impl Core {
 
     /// Program output: through the relay to the screen and every viewer,
     /// then whatever status or title it reported.
-    pub fn output(&self, st: &mut State, id: u32, bytes: &[u8]) {
+    pub fn output(&self, st: &mut State, id: u32, instance: &str, bytes: &[u8]) {
+        if !st.reg.terminals.get(&id).is_some_and(|t| t.is_live() && t.holder.as_deref() == Some(instance)) {
+            return;
+        }
         st.last_output.insert(id, Instant::now());
         *st.output_seq.entry(id).or_default() += 1;
         if let Some(t) = st.reg.terminals.get_mut(&id) {
@@ -146,6 +149,7 @@ impl Core {
         let word = |st: &State| st.reg.terminals[&id].status.as_ref().map(|s| s.state.clone());
         let mut word_changed = false;
         for r in reports {
+            self.bind_resume_session(st, id, r);
             let was = word(st);
             let t = st.reg.terminals.get_mut(&id).expect("live terminal");
             let change = crate::status::apply(t, r);
@@ -159,13 +163,14 @@ impl Core {
 
     pub fn status_changed(&self, st: &mut State, id: u32, change: crate::status::Change) {
         let t = &st.reg.terminals[&id];
-        let (status, records, turn, reported) = (t.status.clone(), t.records.clone(), t.turn, t.reported);
+        let (status, records, turn, reported, resume_session) =
+            (t.status.clone(), t.records.clone(), t.turn, t.reported, t.resume_session.clone());
         if change.status {
             self.emit(
                 st,
                 "status",
                 id,
-                serde_json::json!({"status": status, "records": records, "reported": reported}),
+                serde_json::json!({"status": status, "records": records, "reported": reported, "resume_session": resume_session}),
             );
         }
         if change.turn_ended {
