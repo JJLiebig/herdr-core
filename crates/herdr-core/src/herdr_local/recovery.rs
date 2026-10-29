@@ -2,7 +2,7 @@
 use crate::api::KeepParams;
 use crate::holder_proto as proto;
 use crate::rpc::RpcError;
-use crate::runtime::Core;
+use crate::runtime::{Core, State};
 use crate::terminals::{Public, Terminal};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,35 @@ pub struct Recovery {
 }
 
 impl Core {
+    /// New live output only: replaying a tail could resurrect a deliberately reset session.
+    pub(crate) fn bind_resume_session(&self, st: &mut State, id: u32, report: &ghostty_vt::StatusReport) {
+        if !report.id.is_empty() || report.state == "clear" {
+            return;
+        }
+        let Some(session) =
+            report.raw.split(':').filter_map(|f| f.strip_prefix("session=")).next_back().filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        let Some(t) = st
+            .reg
+            .terminals
+            .get_mut(&id)
+            .filter(|t| t.is_live() && t.keep && t.recovery.is_some() && t.holder.is_some())
+        else {
+            return;
+        };
+        if t.resume_session.as_deref() == Some(session) {
+            return;
+        }
+        let was = t.resume_session.replace(session.into());
+        let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
+        if let Err(e) = crate::paths::write_atomic(&self.paths.state.join("terminals.json"), &bytes) {
+            st.reg.terminals.get_mut(&id).expect("live terminal").resume_session = was;
+            eprintln!("core: cannot save resume session for {}: {e}", crate::terminals::address(id));
+        }
+    }
+
     pub(crate) fn set_keep(&self, id: u32, p: KeepParams) -> Result<Public, RpcError> {
         let mut st = self.lock();
         let t = st.reg.terminals.get(&id).ok_or_else(|| RpcError::invalid_params("terminal no longer exists"))?;
@@ -57,6 +86,7 @@ impl Core {
         t.keep = p.keep;
         if !p.keep {
             t.recovery = None;
+            t.resume_session = None;
         } else if let Some(recovery) = p.recovery {
             t.recovery = Some(recovery);
         }
@@ -231,5 +261,114 @@ mod tests {
             t.recovery_command(&BTreeMap::new()),
             (vec!["helper".into(), "--recover".into()], "gone-folder".into())
         );
+    }
+    #[test]
+    fn native_session_from_current_live_output_is_durable_independent_of_status() {
+        let root = std::env::temp_dir().join(format!("hc-native-session-{}", crate::platform::random_hex()));
+        let core = Core::start(
+            Paths {
+                state: root.join("state"),
+                config: root.join("config.toml"),
+                socket: root.join("core.sock"),
+                holder_socket: root.join("holder.sock"),
+            },
+            crate::api::CoreInfo { id: "test".into(), name: "test".into() },
+        )
+        .unwrap();
+        let id = {
+            let mut st = core.lock();
+            let id = st.reg.create(NewTerminal { argv: vec!["unused".into()], ..Default::default() }, 0).unwrap();
+            let t = st.reg.terminals.get_mut(&id).unwrap();
+            t.scope = Some("current".into());
+            t.holder = Some("holder".into());
+            t.pid = Some(1);
+            st.screens.insert(id, ghostty_vt::Terminal::new(80, 24, 1 << 20));
+            // Ordinary keep has not consented to a recovery command, so it binds nothing.
+            st.reg.terminals.get_mut(&id).unwrap().keep = true;
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=unregistered\x07");
+            assert!(st.reg.terminals[&id].resume_session.is_none());
+            id
+        };
+        let register = || KeepParams {
+            terminal: "t1".into(),
+            keep: true,
+            recovery: Some(Recovery { argv: vec!["helper".into()], cwd: root.display().to_string() }),
+            expected_scope: Some("current".into()),
+        };
+        core.set_keep(id, register()).unwrap();
+        let disk_session = || {
+            let reg: crate::terminals::Registry =
+                crate::paths::read_state(&core.paths.state.join("terminals.json")).unwrap();
+            reg.terminals[&id].resume_session.clone()
+        };
+        {
+            let mut st = core.lock();
+            core.output(&mut st, id, "stale-holder", b"\x1b]7501;state=working:session=stale\x07");
+            assert!(st.reg.terminals[&id].resume_session.is_none());
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=first:session=pri");
+            assert!(st.reg.terminals[&id].resume_session.is_none());
+            core.output(&mut st, id, "holder", b"mary\x1b\\");
+            assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("primary"));
+            assert_eq!(disk_session().as_deref(), Some("primary"), "same status word still saves identity immediately");
+            for body in [
+                "state=working:id=child:session=wrong",
+                "state=clear:session=wrong",
+                "state=working:session=",
+                "state=working",
+                "state=working:session=wrong:session=",
+            ] {
+                core.output(&mut st, id, "holder", format!("\x1b]7501;{body}\x07").as_bytes());
+                assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("primary"));
+            }
+            // Force an actual atomic-write failure while the ordinary status word stays the same.
+            std::fs::create_dir(core.paths.state.join("terminals.tmp")).unwrap();
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=changed\x07");
+            let public = serde_json::to_value(Public(st.reg.terminals[&id].clone())).unwrap();
+            assert_eq!(public["resume_session"], "primary");
+            assert_eq!(disk_session().as_deref(), Some("primary"));
+            std::fs::remove_dir(core.paths.state.join("terminals.tmp")).unwrap();
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=changed\x07");
+            assert_eq!(disk_session().as_deref(), Some("changed"));
+            // Identical identity and status must not rewrite the registry for every frame.
+            let registry = core.paths.state.join("terminals.json");
+            let saved = core.paths.state.join("saved.json");
+            std::fs::rename(&registry, &saved).unwrap();
+            core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=changed\x07");
+            assert!(!registry.exists());
+            std::fs::rename(&saved, &registry).unwrap();
+        }
+        // Recovery registration must not erase the last durable native identity.
+        assert_eq!(core.set_keep(id, register()).unwrap().0.resume_session.as_deref(), Some("changed"));
+        {
+            let mut st = core.lock();
+            for reason in ["holder_lost", "server_stop"] {
+                st.reg.terminals.get_mut(&id).unwrap().holder = Some("holder".into());
+                st.screens.insert(id, ghostty_vt::Terminal::new(80, 24, 1 << 20));
+                core.output(&mut st, id, "holder", b"\x1b]7501;state=working\x07");
+                assert!(st.reg.terminals[&id].status.is_some());
+                core.record_finish(&mut st, id, proto::Exit { code: None, signal: None }, reason);
+                assert!(st.reg.terminals[&id].status.is_none());
+                assert!(st.reg.terminals[&id].holder.is_none());
+                assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
+                core.output(&mut st, id, "holder", b"\x1b]7501;state=working:session=late\x07");
+                assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
+            }
+            let t = st.reg.terminals.get_mut(&id).unwrap();
+            t.holder = Some("holder".into());
+        }
+        std::fs::create_dir(core.paths.state.join("terminals.tmp")).unwrap();
+        let off = || KeepParams {
+            terminal: "t1".into(),
+            keep: false,
+            recovery: None,
+            expected_scope: Some("current".into()),
+        };
+        assert!(core.set_keep(id, off()).is_err());
+        assert_eq!(core.lock().reg.terminals[&id].resume_session.as_deref(), Some("changed"));
+        std::fs::remove_dir(core.paths.state.join("terminals.tmp")).unwrap();
+        assert!(core.set_keep(id, off()).unwrap().0.resume_session.is_none());
+        assert!(disk_session().is_none());
+        drop(core);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

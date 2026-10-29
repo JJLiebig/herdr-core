@@ -464,7 +464,7 @@ impl Core {
         while let Ok(Some((kind, id, payload))) = proto::read(&mut stream) {
             let mut st = self.lock();
             match kind {
-                proto::OUTPUT => self.output(&mut st, id, &payload),
+                proto::OUTPUT => self.output(&mut st, id, &instance, &payload),
                 proto::SPAWNED | proto::SPAWN_FAILED => {
                     let result = if kind == proto::SPAWNED {
                         proto::parse::<proto::Spawned>(&payload).map(|s| s.pid).map_err(|e| e.to_string())

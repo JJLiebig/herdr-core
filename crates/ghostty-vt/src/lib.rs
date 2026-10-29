@@ -172,6 +172,7 @@ mod ffi {
         pub app: Str,
         pub title: Str,
         pub message: Str,
+        pub raw: Str,
     }
 
     #[repr(C)]
@@ -277,6 +278,8 @@ pub struct StatusReport {
     pub app: String,
     pub title: String,
     pub message: String,
+    /// Validated original body after `7501;`, copied during the callback.
+    pub raw: String,
 }
 
 /// What the terminal answers on the program's behalf, set by the core.
@@ -322,6 +325,7 @@ extern "C" fn on_program_status(_: ffi::Terminal, ud: *mut c_void, r: *const ffi
         app: string(&r.app),
         title: string(&r.title),
         message: string(&r.message),
+        raw: string(&r.raw),
     });
 }
 
@@ -849,11 +853,13 @@ mod tests {
     #[test]
     fn program_status_reports_and_title_changes_reach_us() {
         let mut t = Terminal::new(80, 24, 1 << 20);
-        t.write(b"\x1b]7501;state=working:app=claude-code:progress=40\x1b\\");
+        t.write(b"\x1b]7501;state=work");
+        t.write(b"ing:app=claude-code:progress=40:session=opaque-id\x1b\\");
         t.write(b"\x1b]7501;state=blocked:kind=permission:id=a/b:msg=QXBwbHk/\x07");
         t.write(b"\x1b]7501;state=clear\x1b\\\x1b]7501;state=bogus\x1b\\");
         let reports = t.take_status_reports();
         assert_eq!(reports.len(), 3, "{reports:?}");
+        assert_eq!(reports[0].raw, "state=working:app=claude-code:progress=40:session=opaque-id");
         assert_eq!(
             (reports[0].state, reports[0].progress, reports[0].app.as_str()),
             ("working", Some(40), "claude-code")

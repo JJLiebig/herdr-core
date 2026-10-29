@@ -165,6 +165,15 @@ paths start at your current folder. Prefer explicit paths for remote work.
   selection is done by core. Omit recovery to preserve the choice; `keep: false`
   clears it. Supply `expected_scope` on cleanup too: a stale, lost or stopping program cannot change keep.
   Ordinary exit/kill stay final, and surviving holders are adopted.
+  With a registered kept recovery command, live root OSC 7501 reports may include
+  `session=<opaque-id>`; a nonempty value becomes public `resume_session`
+  only after it is saved. The last key wins; if empty, leave the binding unchanged.
+  Child records, absent session
+  and `state=clear` do not change it. Status reset and loss preserve the binding;
+  `keep: false` clears it atomically. For an explicit new/resume invocation, clear
+  keep before registering its recovery command. Recovery re-registration preserves
+  the binding. Replayed output never sets it. OSC has no acknowledgement: a report
+  never processed, or a failed write (logged by core), does not establish durability.
 
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
