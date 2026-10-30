@@ -57,7 +57,17 @@ Values are literal text after the first colon, trimmed at each end.
 Do not add YAML quotes around them or use multiline YAML values.
 Unknown fields are ignored.
 The body is the agent's opening instructions. Core appends your task after a blank line.
-The command runs through `sh`, which must be on PATH on Windows too.
+The command runs through this machine's shell line: `sh -c` on Linux/macOS, cmd on Windows,
+just like `hc run "line"`. On Windows, use `pwsh -File` to run a PowerShell script:
+
+```markdown
+---
+command: pwsh -NoProfile -File "C:\agents\code reviewer.ps1"
+---
+Review the assigned code.
+```
+
+Existing Windows templates using sh syntax can keep it with `command: sh -c "<old command>"`.
 
 ## Readiness and input
 

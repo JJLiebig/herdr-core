@@ -23,6 +23,8 @@ Optional `submit` names keys separated by single spaces (default `enter`). For
 Windows clients that absorb Enter into a buffered paste, `submit: right enter`
 ends the paste before submitting. Use it only when Right is appropriate for that
 program; a longer `paste_gap_ms` cannot separate input drained from a queue.
+The command uses the running machine's shell line: `sh -c` on Linux/macOS,
+cmd on Windows. For a Windows script, use `command: pwsh -NoProfile -File C:\agents\codex.ps1`.
 
 ```sh
 hc run --bg --name review --cwd /path/to/repo reviewer "Review only src/x.rs. Read-only; no subagents. Report findings with hc send $HC_TERMINAL_ID when done or stuck."
