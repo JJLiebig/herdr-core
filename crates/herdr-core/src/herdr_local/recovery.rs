@@ -135,7 +135,11 @@ impl Core {
 }
 
 impl Terminal {
-    pub(crate) fn prepare_recovery(&mut self, env: &BTreeMap<String, String>, shell: &[String]) -> (Vec<String>, String) {
+    pub(crate) fn prepare_recovery(
+        &mut self,
+        env: &BTreeMap<String, String>,
+        shell: &[String],
+    ) -> (Vec<String>, String) {
         if let Some(recovery) = &self.recovery {
             return (recovery.argv.clone(), recovery.cwd.clone());
         }
