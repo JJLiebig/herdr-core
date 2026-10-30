@@ -135,7 +135,7 @@ impl Core {
 }
 
 impl Terminal {
-    pub(crate) fn prepare_recovery(&mut self, env: &BTreeMap<String, String>) -> (Vec<String>, String) {
+    pub(crate) fn prepare_recovery(&mut self, env: &BTreeMap<String, String>, shell: &[String]) -> (Vec<String>, String) {
         if let Some(recovery) = &self.recovery {
             return (recovery.argv.clone(), recovery.cwd.clone());
         }
@@ -148,7 +148,7 @@ impl Terminal {
             .unwrap_or_else(|| {
                 env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
             });
-        (crate::platform::own_shell(), cwd)
+        (shell.to_vec(), cwd)
     }
 }
 
@@ -283,7 +283,7 @@ mod tests {
         let t = reg.terminals.get_mut(&id).unwrap();
         t.recovery = Some(Recovery { argv: vec!["helper".into(), "--recover".into()], cwd: "gone-folder".into() });
         assert_eq!(
-            t.prepare_recovery(&BTreeMap::new()),
+            t.prepare_recovery(&BTreeMap::new(), &["configured-shell".into()]),
             (vec!["helper".into(), "--recover".into()], "gone-folder".into())
         );
     }
@@ -415,7 +415,7 @@ mod tests {
                 assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
             }
             let t = st.reg.terminals.get_mut(&id).unwrap();
-            t.prepare_recovery(&BTreeMap::new());
+            t.prepare_recovery(&BTreeMap::new(), &["configured-shell".into()]);
             assert_eq!(t.resume_session.as_deref(), Some("changed"));
             t.holder = Some("holder".into());
         }

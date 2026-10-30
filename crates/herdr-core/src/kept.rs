@@ -52,6 +52,13 @@ impl Core {
             eprintln!("core: kept terminals waiting for a holder: {e}");
             return;
         }
+        let shell = match crate::config::load(&self.paths.config).and_then(|settings| settings.shell()) {
+            Ok(shell) => shell,
+            Err(e) => {
+                eprintln!("core: kept terminals waiting for a shell: {}", e.message);
+                return;
+            }
+        };
         let base_env = crate::platform::program_env().await;
         let mut st = self.lock();
         if st.stopping
@@ -73,7 +80,7 @@ impl Core {
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
             let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
-            let (argv, cwd) = t.prepare_recovery(&env);
+            let (argv, cwd) = t.prepare_recovery(&env, &shell);
             let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
             t.scope = Some(scope);
             t.holder = Some(instance);
