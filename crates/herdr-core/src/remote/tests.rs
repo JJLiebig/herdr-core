@@ -115,6 +115,7 @@ fn absent_native_session_stays_canonical_across_events_and_reconnects() {
         host: "rohan".into(),
         version: "test".into(),
     };
+    core.lock().machines.push(machine.clone());
     let mut registry = crate::terminals::Registry::default();
     let id = registry
         .create(crate::terminals::NewTerminal { argv: vec!["unused".into()], keep: true, ..Default::default() }, 0)
@@ -146,7 +147,7 @@ fn absent_native_session_stays_canonical_across_events_and_reconnects() {
             assert_eq!(events.try_recv().unwrap()["type"], "created");
             record["keep"] = false.into();
         }
-        mirror_event(&core, &machine, json!({"type": kind, "terminal": "rohan/t1", "data": data}));
+        mirror_event(&core, &machine, json!({"type": kind, "terminal": "t1", "data": data}));
         assert_eq!(events.try_recv().unwrap()["type"], kind);
         mirror_replace(&core, &machine, vec![record.clone()]);
         assert!(events.try_recv().is_err(), "unchanged reconnect must not emit created after {kind}");
