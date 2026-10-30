@@ -633,6 +633,37 @@ fn a_shell_behind_a_launcher_reports_its_own_folder_and_arguments() {
 }
 
 #[test]
+fn a_shell_in_another_console_does_not_supply_this_terminals_folder() {
+    let s = Session::new();
+    let here = s.root.join("this console");
+    let there = s.root.join("other console");
+    std::fs::create_dir(&here).unwrap();
+    std::fs::create_dir(&there).unwrap();
+    let script = s.file(
+        "separate-console.ps1",
+        &format!(
+            r#"
+Start-Process cmd.exe -ArgumentList '/d','/q','/k' -WorkingDirectory '{}' -WindowStyle Hidden
+[Environment]::CurrentDirectory = '{}'
+Write-Output 'separate-console-ready'
+while ($true) {{ Start-Sleep 1 }}
+"#,
+            there.display(),
+            here.display()
+        ),
+    );
+    let t = s.bg(&["powershell.exe", "-NoProfile", "-File", &script]);
+    s.shows(&t, "separate-console-ready");
+    let expected = std::fs::canonicalize(&here).unwrap();
+    wait_until("only this console supplies foreground metadata", || {
+        let terminal = s.json(&["get", &t]);
+        let f = &terminal["foreground"];
+        f["pid"] == terminal["pid"]
+            && std::fs::canonicalize(f["cwd"].as_str().unwrap_or_default()).ok().as_ref() == Some(&expected)
+    });
+}
+
+#[test]
 fn a_32_bit_shell_reports_its_folder_and_arguments() {
     let s = Session::new();
     let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"SysWOW64\cmd.exe");

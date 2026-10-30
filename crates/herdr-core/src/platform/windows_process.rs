@@ -104,6 +104,7 @@ pub fn shell_pid(pid: u32) -> u32 {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+    let Some(host) = console_host(pid) else { return pid };
     let mut shells = Vec::new();
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -126,12 +127,30 @@ pub fn shell_pid(pid: u32) -> u32 {
             ok = Process32NextW(snapshot.as_raw_handle() as HANDLE, &mut entry);
         }
     }
-    unique_shell(pid, shells)
+    unique_shell(pid, shells, |child| console_host(child) == Some(host))
 }
 
-fn unique_shell(mut pid: u32, mut shells: Vec<(u32, u32)>) -> u32 {
+fn console_host(pid: u32) -> Option<usize> {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Wdk::System::Threading::NtQueryInformationProcess;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    let mut host = 0usize;
+    // ProcessConsoleHostProcess (49): the host PID with flags in its low two bits.
+    let status = unsafe {
+        NtQueryInformationProcess(handle.as_raw_handle(), 49, (&raw mut host).cast(), size_of::<usize>() as u32, &mut 0)
+    };
+    (status == 0 && host & !3 != 0).then_some(host & !3)
+}
+
+fn unique_shell(mut pid: u32, mut shells: Vec<(u32, u32)>, same_console: impl Fn(u32) -> bool) -> u32 {
     loop {
-        let mut children = shells.iter().filter(|(_, parent)| *parent == pid);
+        let mut children = shells.iter().filter(|(child, parent)| *parent == pid && same_console(*child));
         let Some(&(child, _)) = children.next() else { return pid };
         if children.next().is_some() {
             return pid;
@@ -148,9 +167,10 @@ mod tests {
 
     #[test]
     fn follows_shell_chains_but_does_not_guess_between_siblings() {
-        assert_eq!(unique_shell(1, vec![(2, 1), (3, 2)]), 3);
-        assert_eq!(unique_shell(1, vec![(2, 1), (3, 2), (4, 2)]), 2);
-        assert_eq!(unique_shell(1, vec![]), 1);
-        assert_eq!(unique_shell(1, vec![(2, 1), (1, 2)]), 2);
+        assert_eq!(unique_shell(1, vec![(2, 1), (3, 2)], |_| true), 3);
+        assert_eq!(unique_shell(1, vec![(2, 1), (3, 2), (4, 2)], |_| true), 2);
+        assert_eq!(unique_shell(1, vec![], |_| true), 1);
+        assert_eq!(unique_shell(1, vec![(2, 1), (3, 1)], |pid| pid == 3), 3);
+        assert_eq!(unique_shell(1, vec![(2, 1), (1, 2)], |_| true), 2);
     }
 }

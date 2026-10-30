@@ -145,9 +145,9 @@ text rewriting needed: only the edit travels.
 Remote paths start at that machine's home unless you set `--cwd`; local
 paths start at your current folder. Prefer explicit paths for remote work.
 
-On Windows, foreground metadata follows a unique shell child behind a launcher,
-including 32-bit shells. If several shell children exist, hc keeps the last
-unambiguous process.
+On Windows, foreground metadata follows a unique shell child in the same console,
+including 32-bit shells behind launchers. If several shell children exist, hc
+keeps the last unambiguous process.
 
 ## Status, recovery, and cleanup
 
