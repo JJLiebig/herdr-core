@@ -18,8 +18,12 @@ The upstream instructions follow unchanged.
   commit; no upstream-sync PR. Check affected fork seams and resolve conflicts
   narrowly; do not rewrite upstream behavior or include cleanup.
 - Review only fork-authored changes or exact conflict resolutions, never the
-  full upstream integration. Use local review; do not request GitHub AI reviews.
-  Run relevant checks and required native gates; serialize heavy Rust builds.
+  full upstream integration. Run relevant checks and required native gates;
+  serialize heavy Rust builds.
+- Upstream PRs (`herdrdev/*`): local review, then comment `@greptileai review`
+  on each pushed head until Greptile scores 5/5 with no open comments. Codex
+  isn't enabled upstream: request GitHub Codex review (`@codex review`, or the
+  `/review-suite` GitHub review) only on the user's own repositories.
 - Keep `FORK_LEDGER.md` as a current capability map, not a changelog. Update a
   capability's owned files, required seams and retirement condition together.
 - User-approved private fork work does not wait for upstream approval. Changes
