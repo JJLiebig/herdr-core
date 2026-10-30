@@ -186,7 +186,7 @@ pub fn logout(paths: &crate::paths::Paths, to: Reach) {
     }
 }
 
-/// Targets found to be Windows (no `sh` there), so redials go straight.
+/// Targets found to be Windows, so redials go straight.
 static WINDOWS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 fn is_windows(target: &str) -> bool {
@@ -207,8 +207,8 @@ const WINDOWS_HC: &str = r".\AppData\Local\Programs\herdr-core\herdr-core.exe";
 /// ~/.local/bin. On Windows, whose shell may be cmd or PowerShell, one line
 /// both read alike; the installer put hc on PATH. Never prompts: a login a
 /// person must type fails fast.
-fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) -> tokio::process::Command {
-    let remote = if is_windows(to.target) {
+fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>, windows: bool) -> tokio::process::Command {
+    let remote = if windows {
         format!("{WINDOWS_HC} connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
     } else {
         let session = session.map(|s| format!("HC_SESSION={s} ")).unwrap_or_default();
@@ -263,11 +263,22 @@ pub async fn dial(
     session: Option<&str>,
     hello: Value,
 ) -> Result<Dialed, RpcError> {
-    match dial_once(paths, to, session, hello.clone()).await {
+    match dial_once(paths, to, session, hello.clone(), is_windows(to.target)).await {
         Err(e) if e.kind == "windows" => {
             WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(to.target.to_string());
-            dial_once(paths, to, session, hello).await
+            dial_once(paths, to, session, hello, true).await
         }
+        Err(e) if e.kind == "windows_probe" => match dial_once(paths, to, session, hello, true).await {
+            Ok(dialed) => {
+                WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(to.target.to_string());
+                Ok(dialed)
+            }
+            Err(e) if e.kind == "incompatible" => {
+                WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(to.target.to_string());
+                Err(e)
+            }
+            Err(_) => Err(unreachable(to, "the connection closed")),
+        },
         other => other,
     }
 }
@@ -277,9 +288,11 @@ async fn dial_once(
     to: Reach<'_>,
     session: Option<&str>,
     hello: Value,
+    windows: bool,
 ) -> Result<Dialed, RpcError> {
     let target = to.target;
-    let mut child = pipe(paths, to, session).spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
+    let mut child =
+        pipe(paths, to, session, windows).spawn().map_err(|e| unreachable(to, &format!("cannot run it: {e}")))?;
     let (mut stdin, stdout, mut stderr) =
         (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let mut params = json!({"generation": crate::api::GENERATION});
@@ -316,12 +329,19 @@ async fn dial_once(
             .await
             .ok()
             .flatten();
-            if no_sh(&err) && !is_windows(target) {
-                return Err(RpcError::new("windows", "", "")); // dial picks the Windows line
+            if !windows {
+                if no_sh(&err) {
+                    return Err(RpcError::new("windows", "", "")); // dial picks the Windows line
+                }
+                // cmd can find Git's sh but consumes the script's || itself,
+                // leaving a successful assignment and no protocol reply.
+                if status == Some(0) && err.is_empty() {
+                    return Err(RpcError::new("windows_probe", "", ""));
+                }
             }
             // cmd and PowerShell, when hc isn't where install.ps1 puts it.
             let missing_windows =
-                is_windows(target) && (err.contains("is not recognized") || err.contains("cannot find the path"));
+                windows && (err.contains("is not recognized") || err.contains("cannot find the path"));
             // Some connection wrappers collapse all remote failures to exit code 1.
             if status == Some(127) || err.contains(NOT_HERE) || missing_windows {
                 return Err(RpcError::new(
@@ -540,9 +560,8 @@ mod tests {
         assert!(no_sh("'sh' is not recognized as an internal or external command,"));
         assert!(no_sh("sh : The term 'sh' is not recognized as the name of a cmdlet"));
         assert!(!no_sh("sh: herdr-core: not found"));
-        WINDOWS.lock().unwrap().push("winbox".into());
         let paths = crate::paths::Paths::from_env().unwrap();
-        let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"));
+        let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true);
         let line = cmd.as_std().get_args().last().unwrap().to_string_lossy().into_owned();
         assert_eq!(line, r".\AppData\Local\Programs\herdr-core\herdr-core.exe connect --session s1");
     }

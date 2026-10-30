@@ -352,6 +352,16 @@ fn late_initial_spawn_failure_is_handled_after_timeout_even_after_keep_off() {
 }
 
 #[test]
+fn ordinary_exit_stays_finished_across_a_core_restart_in_the_same_boot() {
+    let s = Session::new();
+    let t = run(&s, &["--keep", "sh", "-c", "exit 1"]);
+    wait_until("ordinary exit", || get(&s, &t)["state"] == "finished");
+    s.json(&["server", "stop"]);
+    assert_eq!(get(&s, &t)["state"], "finished");
+    assert_eq!(get(&s, &t)["exit_code"], 1);
+}
+
+#[test]
 fn stopped_kept_terminal_returns_at_next_start() {
     let s = Session::new();
     let t = run(&s, &["--keep", "sleep", "100"]);

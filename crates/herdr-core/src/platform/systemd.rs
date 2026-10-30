@@ -72,6 +72,13 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
             return None;
         }
     };
+    if let Err(e) = ensure_shutdown_guard(&run, log) {
+        if e.kind() == io::ErrorKind::NotFound {
+            eprintln!("{NO_MANAGER} (no systemd-run on PATH)");
+            return None;
+        }
+        return Some(Err(e));
+    }
     let mut caller: BTreeMap<String, String> = super::utf8_vars().collect();
     let mut unset: Vec<&str> = super::SSH_LOGIN.to_vec();
     for (k, v) in cmd.get_envs() {
@@ -88,7 +95,16 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
     env.insert("XDG_RUNTIME_DIR".into(), run.display().to_string());
     let args: Vec<&OsStr> = cmd.get_args().collect();
     let name = format!("hc-{}-{}", args.first().and_then(|a| a.to_str()).unwrap_or("run"), &super::random_hex()[..8]);
-    let here = std::env::current_dir().is_ok_and(|d| d.is_dir());
+    let here = std::env::current_dir().ok().filter(|d| d.is_dir()).unwrap_or_else(|| PathBuf::from("/"));
+    static VERSION: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let version = *VERSION.get_or_init(|| {
+        Command::new("systemd-run")
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8_lossy(&out.stdout).split_whitespace().nth(1)?.parse::<u32>().ok())
+            .unwrap_or(u32::MAX)
+    });
     let dir = match write_environment(&run, &name, &env) {
         Ok(dir) => dir,
         Err(e) => return Some(Err(e)),
@@ -96,7 +112,7 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
     let out = Command::new("systemd-run")
         .env_clear()
         .envs(&env)
-        .args(unit_args(&name, cmd.get_program(), &args, &dir.join("environment"), &unset, log, here))
+        .args(unit_args(&name, cmd, &dir.join("environment"), &unset, log, &here, version))
         .stdin(Stdio::null())
         .output();
     let started = match out {
@@ -115,6 +131,47 @@ pub fn spawn(cmd: &Command, log: &Path) -> Option<io::Result<()>> {
         let _ = std::fs::remove_dir_all(dir);
     }
     Some(started)
+}
+
+// The guard stays active across core upgrades. On shutdown, reversing the
+// holder -> guard -> core start order saves the core before shells can exit.
+fn shutdown_guard(log: &Path) -> String {
+    let hash = log
+        .parent()
+        .unwrap_or(log)
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3));
+    format!("hc-shutdown-{hash:016x}.service")
+}
+
+fn ensure_shutdown_guard(run: &Path, log: &Path) -> io::Result<()> {
+    let name = shutdown_guard(log);
+    let start = || {
+        Command::new("systemctl")
+            .env("XDG_RUNTIME_DIR", run)
+            .args(["--user", "start", &name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if start() {
+        return Ok(());
+    }
+    let out = Command::new("systemd-run")
+        .env("XDG_RUNTIME_DIR", run)
+        .args(["--user", "--quiet", "--collect", "--service-type=oneshot", "--unit", &name])
+        .args(["-p", "RemainAfterExit=yes", "/usr/bin/true"])
+        .stdin(Stdio::null())
+        .output()?;
+    if out.status.success() || start() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("systemd shutdown guard: {}", String::from_utf8_lossy(&out.stderr).trim())))
+    }
 }
 
 /// EnvironmentFile uses double-quote escaping, not shell evaluation. Literal
@@ -177,22 +234,24 @@ fn service_env(mut env: BTreeMap<String, String>) -> BTreeMap<String, String> {
 /// or holder exits, nothing else goes with it.
 fn unit_args(
     name: &str,
-    program: &OsStr,
-    args: &[&OsStr],
+    cmd: &Command,
     environment: &Path,
     unset: &[&str],
     log: &Path,
-    here: bool,
+    here: &Path,
+    version: u32,
 ) -> Vec<OsString> {
     let mut out: Vec<OsString> = ["--user", "--quiet", "--collect", "--service-type=exec"].map(OsString::from).into();
-    out.push(if here { "--same-dir" } else { "--working-directory=/" }.into());
+    if version >= 243 {
+        out.extend([OsString::from("-p"), OsString::from("OOMPolicy=continue")]);
+    }
     for p in [
         format!("--unit={name}"),
         format!("EnvironmentFile={}", environment.display()),
         format!("RuntimeDirectory={name}"),
         "RuntimeDirectoryMode=0700".into(),
         "RuntimeDirectoryPreserve=restart".into(),
-        "OOMPolicy=continue".into(),
+        format!("WorkingDirectory={}", here.display()),
         "KillMode=process".into(),
         "StandardOutput=null".into(),
         format!("StandardError=append:{}", log.display()),
@@ -203,10 +262,12 @@ fn unit_args(
         }
         out.push(p.into());
     }
+    let order = if cmd.get_args().next().is_some_and(|arg| arg == "hold") { "Before" } else { "After" };
+    out.extend(["-p".into(), format!("{order}={}", shutdown_guard(log)).into()]);
     // systemd expands $ in a service's command line; $$ is a plain $.
     let literal = |a: &OsStr| OsString::from(a.to_string_lossy().replace('$', "$$"));
-    out.push(literal(program));
-    out.extend(args.iter().map(|a| literal(a)));
+    out.push(literal(cmd.get_program()));
+    out.extend(cmd.get_args().map(literal));
     out
 }
 
@@ -277,6 +338,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsStr;
     use std::path::Path;
+    use std::process::Command;
 
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
@@ -303,12 +365,12 @@ mod tests {
         let socket = OsStr::new("/run/${USER}.sock");
         let args = super::unit_args(
             "hc-hold-1",
-            OsStr::new("/bin/hc"),
-            &[OsStr::new("hold"), socket],
+            Command::new("/bin/hc").args([OsStr::new("hold"), socket]),
             Path::new("/run/user/1/hc-hold-1/environment"),
             &["HC_SCOPE"],
             Path::new("/s/x.log"),
-            false,
+            Path::new("/"),
+            259,
         );
         let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert!(!args.iter().any(|a| a.contains("secret-canary")), "{args:?}");
@@ -319,12 +381,58 @@ mod tests {
             "RuntimeDirectoryPreserve=restart",
             "UnsetEnvironment=HC_SCOPE",
             "OOMPolicy=continue",
-            "--working-directory=/",
+            "WorkingDirectory=/",
         ] {
             assert!(args.iter().any(|a| a == want), "{want} missing from {args:?}");
         }
         assert_eq!(&args[args.len() - 3..], ["/bin/hc", "hold", "/run/$${USER}.sock"]);
         assert!(!args.iter().any(|a| a.starts_with("ManagedOOM")), "uresourced loops on oomd's xattr: {args:?}");
+    }
+
+    #[test]
+    fn el8_services_keep_the_callers_directory_without_newer_options() {
+        let args = super::unit_args(
+            "hc-serve-1",
+            Command::new("/bin/hc").arg("serve"),
+            Path::new("/run/user/1/hc-serve-1/environment"),
+            &[],
+            Path::new("/s/x.log"),
+            Path::new("/home/user/my project/a%hb"),
+            239,
+        );
+        assert!(args.contains(&"WorkingDirectory=/home/user/my project/a%hb".into()));
+        assert!(!args.iter().any(|a| a.to_string_lossy().contains("OOMPolicy")));
+        assert!(!args.iter().any(|a| a == "--same-dir" || a.to_string_lossy().starts_with("--working-directory")));
+    }
+
+    #[test]
+    fn shutdown_stops_every_core_before_its_holders_even_after_a_restart() {
+        let args = |name: &str, command: &str, log: &str| {
+            super::unit_args(
+                name,
+                Command::new("/bin/hc").arg(command),
+                Path::new("/run/environment"),
+                &[],
+                Path::new(log),
+                Path::new("/"),
+                259,
+            )
+        };
+        let first = args("hc-serve-first", "serve", "/state/session/core.log");
+        let next = args("hc-serve-next", "serve", "/state/session/core.log");
+        let holder = args("hc-hold-first", "hold", "/state/session/holder.log");
+        let order =
+            first.iter().find_map(|p| p.to_str()?.strip_prefix("After=hc-shutdown-")).expect("core after guard");
+        assert!(
+            next.iter().any(|p| p == OsStr::new(&format!("After=hc-shutdown-{order}"))),
+            "new cores reuse the guard"
+        );
+        assert!(holder.iter().any(|p| p == OsStr::new(&format!("Before=hc-shutdown-{order}"))), "holder stops last");
+        let other = args("hc-serve-other", "serve", "/state/other/core.log");
+        assert!(
+            !other.iter().any(|p| p == OsStr::new(&format!("After=hc-shutdown-{order}"))),
+            "sessions stay separate"
+        );
     }
 
     #[test]

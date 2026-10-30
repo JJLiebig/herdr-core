@@ -58,7 +58,8 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
         let how = match manager {
             "homebrew" => "brew upgrade herdr-core",
             "nix" => "update it in your Nix configuration",
-            _ => "mise upgrade herdr-core",
+            "mise" => "mise upgrade herdr-core",
+            _ => "update herdr-core with your system's package manager",
         };
         return Err(refused(format!("{shown} belongs to {manager}"), how));
     }

@@ -26,6 +26,56 @@ fn a_machine_is_added_renamed_kept_and_forgotten() {
 }
 
 #[test]
+fn a_windows_shell_with_sh_on_path_retries_the_native_line() {
+    let rohan = Session::new();
+    let mut s = Session::new();
+    let (_, ssh) = fake_ssh(&s, &[("rohan", &rohan)]);
+    let wrapper = s.root.join("msys-ssh");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \"$2\" in sh\\ *) exit 0;; esac\nexec {ssh} rohan '{} connect'\n",
+            rohan.bin.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    s.env.push(("HC_SSH".into(), wrapper.display().to_string()));
+    let peer = rohan.json(&["server", "status"])["core"]["id"].clone();
+    let added = s.json(&["machine", "add", "windows-msys"]);
+    assert_eq!(added["id"], peer, "{added}");
+    s.json(&["machine", "rm", "windows-msys"]);
+}
+
+#[test]
+fn a_windows_probe_keeps_a_native_protocol_mismatch() {
+    let mut s = Session::new();
+    let wrapper = s.root.join("incompatible-ssh");
+    std::fs::write(&wrapper, "#!/bin/sh\ncase \"$2\" in sh\\ *) exit 0;; esac\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"data\":{\"kind\":\"unsupported_generation\"}}}'\n").unwrap();
+    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    s.env.push(("HC_SSH".into(), wrapper.display().to_string()));
+    let (_, error) = s.err(&["--json", "machine", "add", "old-windows"]);
+    assert_eq!(error["error"]["kind"], "incompatible", "{error}");
+}
+
+#[test]
+fn a_failed_windows_probe_keeps_the_original_posix_error() {
+    let mut s = Session::new();
+    let wrapper = s.root.join("closed-ssh");
+    std::fs::write(
+        &wrapper,
+        "#!/bin/sh\ncase \"$2\" in sh\\ *) exit 0;; esac\necho 'Windows retry error' >&2; exit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    s.env.push(("HC_SSH".into(), wrapper.display().to_string()));
+    let (_, error) = s.err(&["--json", "machine", "add", "posix"]);
+    assert_eq!(error["error"]["kind"], "unreachable", "{error}");
+    assert!(error["error"]["message"].as_str().unwrap().ends_with("the connection closed"), "{error}");
+    assert!(!error.to_string().contains("Windows retry error"), "{error}");
+}
+
+#[test]
 fn a_machine_shows_the_version_its_line_last_saw() {
     // Updated there since it was added (hc machine update, or by hand).
     let rohan = Session::new();

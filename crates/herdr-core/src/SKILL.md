@@ -147,15 +147,21 @@ paths start at your current folder. Prefer explicit paths for remote work.
 
 - State is `live` or `finished`. Status comes from the program's OSC 7501
   reports: `idle`, `working`, `done`, `blocked`, `error`; plain programs
-  report none. Do not guess status from screen text.
+  report none. Do not guess status from screen text. When an observed
+  foreground job returns control to its shell, its status and records clear;
+  suspending the job does this too. Jobs shorter than the foreground sampling
+  interval may not be observed.
 - `blocked` means a person is needed (permission or a question): read the
   screen and ask your user. `send` refuses unless `--force`; don't use it to
   bypass a permission decision. `error`: read why, then send or kill.
 - `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
   never reruns a task. `hc keep <t> --off` disables recovery. Signal death
   without an exit code is loss too. After a grace delay, recovery runs on
-  every OS. Streams end on loss; reattach after the restarted event.
-  Pending input/attach may be unavailable: retry after recovery.
+  every OS, including after a host shutdown. On macOS, shutdown warnings
+  preserve kept programs even if they catch a signal and exit with a code;
+  on Linux, systemd stops the core before its holders. Ordinary exits and
+  explicit kills remain final. Streams end on loss; reattach after the
+  restarted event. Pending input/attach may be unavailable: retry after recovery.
   Private fork API: `terminal.keep` accepts `recovery: {argv: [...], cwd: "/absolute/path"}`
   with `keep: true` and `expected_scope` equal to the registering program's inherited
   `HC_SCOPE`. Register before starting the managed program; success means the choice
@@ -177,10 +183,13 @@ paths start at your current folder. Prefer explicit paths for remote work.
   Replayed complete reports never set it. OSC has no acknowledgement: a report
   never processed, or a failed write (logged by core), does not establish durability.
 
+
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary
   is already current. JSON reports `restarted: true`; terminals keep running.
+  Managed installs, including a non-writable install folder on Unix, must
+  be updated with their package manager instead.
 - Planned restarts and updates preserve the core's launch environment for new
   terminals; per-terminal API `env` overrides still apply. A stop followed by a
   fresh start uses the new launcher's environment.
