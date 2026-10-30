@@ -182,8 +182,6 @@ paths start at your current folder. Prefer explicit paths for remote work.
   registering their recovery command; recovery preserves the durable binding.
   Replayed complete reports never set it. OSC has no acknowledgement: a report
   never processed, or a failed write (logged by core), does not establish durability.
-
-
 - Once work is accepted: `hc kill <t>`, then `hc rm <t>`. Only clean up
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary
