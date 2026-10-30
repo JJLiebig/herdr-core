@@ -189,9 +189,13 @@ impl Core {
                     ));
                 }
                 let screen = st.screens.get(&id).expect("live terminal has a screen");
-                // A template may say how its agent submits (default: Enter after 200 ms).
+                // A template may supply a paste boundary key before submitting (default: Enter after 200 ms).
                 let submit = match &t.submit {
-                    Some(key) => crate::keys::encode(screen, key)?,
+                    Some(keys) => keys
+                        .split(' ')
+                        .map(|key| crate::keys::encode(screen, key))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .concat(),
                     None => b"\r".to_vec(),
                 };
                 let gap = t.paste_gap_ms.map_or(PASTE_GAP, Duration::from_millis);
