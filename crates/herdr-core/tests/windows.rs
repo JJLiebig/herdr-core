@@ -448,15 +448,27 @@ fn malformed_terminal_environment_is_rejected_before_spawning() {
         assert_eq!(reply["error"]["code"], -32602, "{reply}");
         assert!(reply["error"]["message"].as_str().unwrap().contains("environment"), "{reply}");
     }
+    let probe = s.file(
+        "environment.ps1",
+        r#"$vars = [Environment]::GetEnvironmentVariables()
+Write-Output "value=[$($vars['HC_VALUE'])]"
+Write-Output "empty=$($vars.Contains('HC_EMPTY')):[$($vars['HC_EMPTY'])]"
+Write-Output "unicode=[$($vars[[string][char]0x540d])]"
+Write-Output "drive=[$([Environment]::GetEnvironmentVariable('=C:'))]"
+"#,
+    );
     let reply = rpc(
         &s,
         "terminal.run",
         serde_json::json!({
-            "argv":["cmd", "/c", "echo [%HC_VALUE%]"], "wait":true, "timeout":20,
+            "argv":["powershell", "-NoProfile", "-File", probe], "wait":true, "timeout":20,
             "env":{"HC_VALUE":"left=right", "HC_EMPTY":"", "名":"unicode", "=C:":"C:\\Windows"}
         }),
     );
-    assert!(reply["result"]["output"].as_str().unwrap().contains("[left=right]"), "{reply}");
+    let output = reply["result"]["output"].as_str().unwrap();
+    for expected in ["value=[left=right]", "empty=True:[]", "unicode=[unicode]", r"drive=[C:\Windows]"] {
+        assert!(output.contains(expected), "{reply}");
+    }
 }
 
 #[test]
