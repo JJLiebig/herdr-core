@@ -616,6 +616,40 @@ fn restart_and_a_core_crash_keep_terminals_and_stop_leaves_nothing() {
 }
 
 #[test]
+fn a_shell_behind_a_launcher_reports_its_own_folder_and_arguments() {
+    let s = Session::new();
+    let dir = s.root.join("child folder");
+    std::fs::create_dir(&dir).unwrap();
+    let expected = std::fs::canonicalize(&dir).unwrap();
+    let t = s.bg(&["cmd.exe", "/d", "/c", "cmd.exe", "/d", "/q"]);
+    s.out(&["send", &t, &format!("cd /d \"{}\"", dir.display())]);
+    wait_until("the child shell's folder and command line", || {
+        let terminal = s.json(&["get", &t]);
+        let f = &terminal["foreground"];
+        std::fs::canonicalize(f["cwd"].as_str().unwrap_or_default()).ok().as_ref() == Some(&expected)
+            && f["pid"] != terminal["pid"]
+            && f["argv"].as_array().is_some_and(|args| args.iter().any(|a| a == "/q"))
+    });
+}
+
+#[test]
+fn a_32_bit_shell_reports_its_folder_and_arguments() {
+    let s = Session::new();
+    let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"SysWOW64\cmd.exe");
+    let dir = s.root.join("x86 folder");
+    std::fs::create_dir(&dir).unwrap();
+    let expected = std::fs::canonicalize(&dir).unwrap();
+    let t = s.bg(&[shell.to_str().unwrap(), "/d", "/q"]);
+    s.out(&["send", &t, &format!("cd /d \"{}\"", dir.display())]);
+    wait_until("the 32-bit shell's folder and command line", || {
+        let terminal = s.json(&["get", &t]);
+        let f = &terminal["foreground"];
+        std::fs::canonicalize(f["cwd"].as_str().unwrap_or_default()).ok().as_ref() == Some(&expected)
+            && f["argv"].as_array().is_some_and(|args| args.iter().any(|a| a == "/q"))
+    });
+}
+
+#[test]
 fn the_folder_a_shell_moves_to_is_seen_and_a_lost_kept_shell_returns_there() {
     let s = Session::new();
     let dir = s.root.join("moved here");
