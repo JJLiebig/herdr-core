@@ -119,6 +119,8 @@ Use the returned address to wait/read it; don't launch a duplicate.
 Your harness's own file tools touch only the machine you run on. Use hc for
 remote files and commands. `hc machine ls` lists configured machines; see
 `hc machine --help` to configure SSH or `--via <cmd>` connections.
+Without `--name`, SSH machines use the first host label (IPs stay whole),
+shortened to 32 characters with `-2`, `-3`, etc. added if the name is taken.
 
 On Windows, `hc server status` never starts a core. If elevated SSH startup
 would block the same user's desktop session, open Herdr on that Windows
@@ -147,13 +149,13 @@ paths start at your current folder. Prefer explicit paths for remote work.
 
 - State is `live` or `finished`. Status comes from the program's OSC 7501
   reports: `idle`, `working`, `done`, `blocked`, `error`; plain programs
-  report none. Do not guess status from screen text. When an observed
-  foreground job returns control to its shell, its status and records clear;
-  suspending the job does this too. Jobs shorter than the foreground sampling
-  interval may not be observed.
+  report none. Do not guess status from screen text.
 - `blocked` means a person is needed (permission or a question): read the
   screen and ask your user. `send` refuses unless `--force`; don't use it to
   bypass a permission decision. `error`: read why, then send or kill.
+- `hc run` without a command starts this machine's own shell. On macOS,
+  this is a login shell so it loads the login environment; explicit commands
+  are unchanged. Recovery shells use the same rule.
 - `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
   never reruns a task. `hc keep <t> --off` disables recovery. Signal death
   without an exit code is loss too. After a grace delay, recovery runs on
@@ -166,8 +168,8 @@ paths start at your current folder. Prefer explicit paths for remote work.
   terminals you started; `hc ls` includes your user's other live work.
 - `hc update` also restarts an older running core when the installed binary
   is already current. JSON reports `restarted: true`; terminals keep running.
-  Managed installs, including a non-writable install folder on Unix, must
-  be updated with their package manager instead.
+  Managed installs must be updated with their package manager instead, and
+  one in a folder you can't write (Unix) the way it was installed.
 - Planned restarts and updates preserve the core's launch environment for new
   terminals; per-terminal API `env` overrides still apply. A stop followed by a
   fresh start uses the new launcher's environment.
