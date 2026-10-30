@@ -136,6 +136,60 @@ fn alive(pid: u64) -> bool {
 }
 
 #[test]
+fn a_template_submits_queued_text_with_an_ordered_key_sequence() {
+    let s = Session::new();
+    let probe = s.file(
+        "queued-input.ps1",
+        r#"[Console]::WriteLine('READER_READY')
+while (!(Test-Path (Join-Path $PSScriptRoot 'release'))) { Start-Sleep -Milliseconds 10 }
+$keys = @()
+do {
+    $key = [Console]::ReadKey($true)
+    $keys += $key.Key.ToString()
+} until ($key.Key -eq 'Enter')
+Start-Sleep -Milliseconds 100
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'keys.json'), (ConvertTo-Json @{keys=$keys; extra=[Console]::KeyAvailable}))
+"#,
+    );
+    let templates = s.root.join("config/herdr-core/templates");
+    std::fs::create_dir_all(&templates).unwrap();
+    std::fs::write(
+        templates.join("queued.md"),
+        format!(
+            "---\nsubmit: right enter\npaste_gap_ms: 0\ncommand: powershell.exe -NoProfile -File \"{probe}\"\n---\n"
+        ),
+    )
+    .unwrap();
+    // Templates use sh; pass Git's shell explicitly when it is absent from the user's PATH.
+    let mut conn = cmd(&s.name, &s.root)
+        .arg("connect")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let request = serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"terminal.run", "params":{
+        "argv":["queued"], "env":{"PATH":format!("C:\\Program Files\\Git\\bin;{}", std::env::var("PATH").unwrap_or_default())}
+    }});
+    let mut input = conn.stdin.take().unwrap();
+    std::io::Write::write_all(&mut input, format!("{request}\n").as_bytes()).unwrap();
+    let mut reply = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(conn.stdout.take().unwrap()), &mut reply).unwrap();
+    drop(input);
+    let _ = conn.wait();
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    let t = reply["result"]["address"].as_str().unwrap_or_else(|| panic!("{reply}")).to_string();
+    s.shows(&t, "READER_READY");
+    let (code, _) = s.out(&["send", &t, "abc"]);
+    assert_eq!(code, 0);
+    s.file("release", "");
+    let result = s.root.join("keys.json");
+    wait_until("queued input consumed", || result.exists());
+    let keys: Value = serde_json::from_slice(&std::fs::read(result).unwrap()).unwrap();
+    assert_eq!(keys["keys"], serde_json::json!(["A", "B", "C", "RightArrow", "Enter"]));
+    assert_eq!(keys["extra"], false, "submission must not be retried");
+}
+
+#[test]
 fn sessions_select_distinct_pipes_even_with_the_same_state_home() {
     let a = Session::new();
     let b = Session::new();
