@@ -274,13 +274,14 @@ pub async fn dial(
     session: Option<&str>,
     hello: Value,
 ) -> Result<Dialed, RpcError> {
-    match dial_once(paths, to, session, hello.clone(), is_windows(to.target)).await {
+    let mut probe_windows = false;
+    match dial_once(paths, to, session, hello.clone(), is_windows(to.target), &mut probe_windows).await {
         Err(e) if e.kind == "windows" => {
             WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(to.target.to_string());
-            dial_once(paths, to, session, hello, true).await
+            dial_once(paths, to, session, hello, true, &mut probe_windows).await
         }
-        Err(e) if e.kind == "windows_probe" => match dial_once(paths, to, session, hello, true).await {
-            Err(_) if !is_windows(to.target) => Err(unreachable(to, "the connection closed")),
+        Err(e) if probe_windows => match dial_once(paths, to, session, hello, true, &mut probe_windows).await {
+            Err(_) if !is_windows(to.target) => Err(e),
             result => result,
         },
         other => other,
@@ -293,6 +294,7 @@ async fn dial_once(
     session: Option<&str>,
     hello: Value,
     windows: bool,
+    probe_windows: &mut bool,
 ) -> Result<Dialed, RpcError> {
     let target = to.target;
     let mut child =
@@ -337,11 +339,9 @@ async fn dial_once(
                 if no_sh(&err) {
                     return Err(RpcError::new("windows", "", "")); // dial picks the Windows line
                 }
-                // cmd can find Git's sh but consumes the script's || itself,
-                // leaving a successful assignment and no protocol reply.
-                if status == Some(0) && err.is_empty() {
-                    return Err(RpcError::new("windows_probe", "", ""));
-                }
+                // Windows may find Git's sh but fail in its shim or mangle
+                // the script's quoting. Only our marker proves the script ran.
+                *probe_windows = !err.contains(NOT_HERE) && !wants_login(&err);
             }
             // cmd and PowerShell, when hc isn't where install.ps1 puts it.
             let missing_windows =

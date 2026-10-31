@@ -113,6 +113,47 @@ fn a_windows_shell_with_sh_on_path_retries_the_native_line() {
 }
 
 #[test]
+fn powershell_with_git_sh_retries_after_a_mangled_script() {
+    let rohan = Session::new();
+    let mut s = Session::new();
+    let (_, ssh) = fake_ssh(&s, &[("rohan", &rohan)]);
+    let wrapper = s.root.join("powershell-ssh");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \"$2\" in sh\\ *) echo \"is: -c: line 2: syntax error: unexpected end of file from '{{' command on line 1\" >&2; exit 2;; esac\nexec {ssh} rohan '{} connect'\n",
+            rohan.bin.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    s.env.push(("HC_SSH".into(), wrapper.display().to_string()));
+    let added = s.json(&["machine", "add", "windows-powershell"]);
+    assert_eq!(added["id"], rohan.json(&["server", "status"])["core"]["id"], "{added}");
+    s.json(&["machine", "rm", "windows-powershell"]);
+}
+
+#[test]
+fn a_missing_unix_core_does_not_try_the_windows_line() {
+    let mut s = Session::new();
+    let wrapper = s.root.join("missing-unix-ssh");
+    let calls = s.root.join("calls");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\necho call >> '{}'\necho 'herdr-core is not installed here' >&2\nexit 127\n",
+            calls.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    s.env.push(("HC_SSH".into(), wrapper.display().to_string()));
+    let (_, missing) = s.err(&["--json", "machine", "add", "unix-no-core"]);
+    assert_eq!(missing["error"]["kind"], "hc_missing", "{missing}");
+    assert_eq!(std::fs::read_to_string(calls).unwrap(), "call\n");
+}
+
+#[test]
 fn a_windows_probe_keeps_a_native_protocol_mismatch() {
     let mut s = Session::new();
     let wrapper = s.root.join("incompatible-ssh");
