@@ -204,11 +204,6 @@ fn is_windows(target: &str) -> bool {
     WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|t| t == target)
 }
 
-/// cmd and PowerShell, asked to run `sh`.
-fn no_sh(err: &str) -> bool {
-    err.contains("'sh' is not recognized") || err.contains("The term 'sh' is not recognized")
-}
-
 /// Where install.ps1 puts hc, from the home folder an ssh session starts in.
 /// Not PATH: sessions riding a shared login keep the PATH from before an
 /// install. `.\` reads the same in cmd and PowerShell.
@@ -220,7 +215,10 @@ const WINDOWS_HC: &str = r".\AppData\Local\Programs\herdr-core\herdr-core.exe";
 /// person must type fails fast.
 fn pipe(paths: &crate::paths::Paths, to: Reach, session: Option<&str>, windows: bool) -> tokio::process::Command {
     let remote = if windows {
-        format!("{WINDOWS_HC} connect{}", session.map(|s| format!(" --session {s}")).unwrap_or_default())
+        let session = session.map(|s| format!(" --session {s}")).unwrap_or_default();
+        format!(
+            "cmd /d /c \"if exist {WINDOWS_HC} ({WINDOWS_HC} connect{session}) else (echo {NOT_HERE} 1>&2 & exit /b 127)\""
+        )
     } else {
         let session = session.map(|s| format!("HC_SESSION={s} ")).unwrap_or_default();
         format!(
@@ -276,10 +274,6 @@ pub async fn dial(
 ) -> Result<Dialed, RpcError> {
     let mut probe_windows = false;
     match dial_once(paths, to, session, hello.clone(), is_windows(to.target), &mut probe_windows).await {
-        Err(e) if e.kind == "windows" => {
-            WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(to.target.to_string());
-            dial_once(paths, to, session, hello, true, &mut probe_windows).await
-        }
         Err(e) if probe_windows => match dial_once(paths, to, session, hello, true, &mut probe_windows).await {
             Err(_) if !is_windows(to.target) => Err(e),
             result => result,
@@ -336,21 +330,16 @@ async fn dial_once(
             .ok()
             .flatten();
             if !windows {
-                if no_sh(&err) {
-                    return Err(RpcError::new("windows", "", "")); // dial picks the Windows line
-                }
                 // Windows may find Git's sh but fail in its shim or mangle
                 // the script's quoting. Only our marker proves the script ran.
-                *probe_windows = !err.contains(NOT_HERE) && !wants_login(&err);
+                *probe_windows = status != Some(255) && !err.contains(NOT_HERE) && !wants_login(&err);
             }
-            // cmd and PowerShell, when hc isn't where install.ps1 puts it.
-            let missing_windows =
-                windows && (err.contains("is not recognized") || err.contains("cannot find the path"));
+            let missing_windows = windows && err.contains(NOT_HERE);
             if missing_windows && !is_windows(target) {
                 WINDOWS.lock().unwrap_or_else(|p| p.into_inner()).push(target.to_string());
             }
             // Some connection wrappers collapse all remote failures to exit code 1.
-            if status == Some(127) || err.contains(NOT_HERE) || missing_windows {
+            if status == Some(127) || err.contains(NOT_HERE) {
                 return Err(RpcError::new(
                     "hc_missing",
                     format!("hc is not installed on {target}"),
@@ -454,12 +443,14 @@ pub fn install(paths: &crate::paths::Paths, to: Reach, session: Option<&str>) ->
     }
     let here = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
     let probe = run_raw(paths, to, "uname -sm", b"")?;
-    let err = String::from_utf8_lossy(&probe.stderr);
     let there = platform(&last_line(&probe.stdout));
-    if err.contains("'uname' is not recognized")
-        || err.contains("The term 'uname' is not recognized")
-        || (probe.status.success() && there.starts_with("windows "))
-    {
+    let windows = if probe.status.success() {
+        there.starts_with("windows ")
+    } else {
+        let native = run_raw(paths, to, "cmd /d /c \"echo herdr-core-windows\"", b"")?;
+        native.status.success() && last_line(&native.stdout) == "herdr-core-windows"
+    };
+    if windows {
         if to.via {
             return Err(RpcError::new("install_failed", format!("{target} runs Windows"), "install hc there yourself"));
         }
@@ -576,12 +567,14 @@ mod tests {
 
     #[test]
     fn a_windows_box_gets_one_line_cmd_and_powershell_read_alike() {
-        assert!(no_sh("'sh' is not recognized as an internal or external command,"));
-        assert!(no_sh("sh : The term 'sh' is not recognized as the name of a cmdlet"));
-        assert!(!no_sh("sh: herdr-core: not found"));
         let paths = crate::paths::Paths::from_env().unwrap();
         let cmd = pipe(&paths, Reach { target: "winbox", via: false }, Some("s1"), true);
         let line = cmd.as_std().get_args().last().unwrap().to_string_lossy().into_owned();
-        assert_eq!(line, r".\AppData\Local\Programs\herdr-core\herdr-core.exe connect --session s1");
+        assert_eq!(
+            line,
+            format!(
+                "cmd /d /c \"if exist {WINDOWS_HC} ({WINDOWS_HC} connect --session s1) else (echo {NOT_HERE} 1>&2 & exit /b 127)\""
+            )
+        );
     }
 }

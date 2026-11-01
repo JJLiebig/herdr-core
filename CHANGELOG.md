@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## [0.1.16] - 2026-10-31
+
+### Fixed
+- Terminals no longer freeze when the core falls behind or loses touch with its holder: it reconnects and keeps your programs running. (#47)
+- Images in yazi and other programs no longer spill as text over a slow connection.
+- Programs pick up the new colors when you change the theme or switch between light and dark. (#46, thanks @geoqiao)
+- Adding a Windows machine works in any Windows language, and when its SSH shell is PowerShell. (#49, #23)
+
+### New
+- Choose the shell new terminals start with, with `shell = [...]` in config.toml. (#24, thanks @JJLiebig)
+
 ## [0.1.15] - 2026-10-30
 
 ### New

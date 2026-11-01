@@ -190,6 +190,18 @@ mod ffi {
         pub fn ghostty_terminal_set(t: Terminal, opt: i32, value: *const c_void) -> i32;
         pub fn ghostty_terminal_get(t: Terminal, data: i32, out: *mut c_void) -> i32;
         pub fn ghostty_terminal_vt_write(t: Terminal, data: *const u8, len: usize);
+        pub fn ghostty_terminal_vt_write_until_ground(
+            t: Terminal,
+            data: *const u8,
+            len: usize,
+            consumed: *mut usize,
+        ) -> i32;
+        pub fn ghostty_terminal_continuation_alloc(
+            t: Terminal,
+            alloc: *const c_void,
+            out: *mut *mut u8,
+            len: *mut usize,
+        ) -> i32;
         pub fn ghostty_color_scheme_report_encode(scheme: i32, buf: *mut u8, cap: usize, len: *mut usize) -> i32;
         pub fn ghostty_terminal_resize(t: Terminal, cols: u16, rows: u16, cw: u32, ch: u32) -> i32;
         pub fn ghostty_terminal_grid_ref(t: Terminal, point: Point, out: *mut GridRef) -> i32;
@@ -422,6 +434,20 @@ impl Terminal {
 
     pub fn write(&mut self, bytes: &[u8]) {
         unsafe { ffi::ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) }
+    }
+
+    /// Bytes that reconstruct the unfinished parser state; unavailable past the tracking limit.
+    pub fn continuation(&self) -> Option<Vec<u8>> {
+        alloc_call(|out, len| unsafe { ffi::ghostty_terminal_continuation_alloc(self.raw, ptr::null(), out, len) })
+    }
+
+    /// Consumes through the first clean parser boundary, or the entire slice if none is reached.
+    pub fn write_until_ground(&mut self, bytes: &[u8]) -> Option<usize> {
+        let mut consumed = 0;
+        let rc = unsafe {
+            ffi::ghostty_terminal_vt_write_until_ground(self.raw, bytes.as_ptr(), bytes.len(), &mut consumed)
+        };
+        (rc == ffi::SUCCESS).then_some(consumed)
     }
 
     /// Query replies and subscribed notifications since the last call, for the program's PTY.

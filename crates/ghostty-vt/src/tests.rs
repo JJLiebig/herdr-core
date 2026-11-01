@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn continuation_restores_split_sequences_and_long_strings_resume_at_ground() {
+    for prefix in [b"\x1b_Gm=1;AAAA".as_slice(), b"\x1b]2;title", b"\x1bP+q544", b"\x1b[31", b"\xf0\x9f"] {
+        let mut screen = Terminal::new(80, 24, 1 << 20);
+        screen.write(prefix);
+        assert_eq!(screen.continuation().unwrap(), prefix);
+    }
+    let mut screen = Terminal::new(80, 24, 1 << 20);
+    screen.write(b"\x1b_Gm=1;");
+    screen.write(&vec![b'A'; CONTINUATION_MAX_BYTES]);
+    assert!(screen.continuation().is_none());
+    assert_eq!(screen.write_until_ground(b"AAAA"), None);
+    assert_eq!(screen.write_until_ground(b"AA\x1b\\\x1b_Gm=1;BBBB"), Some(4));
+    assert_eq!(screen.continuation(), Some(Vec::new()));
+}
+
+#[test]
 fn display_changes_report_to_subscribers_and_queries_use_the_latest_facts() {
     let mut t = Terminal::new(80, 24, 0);
     t.write(b"\x1b[?2031h");
