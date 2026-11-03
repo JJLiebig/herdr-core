@@ -348,6 +348,9 @@ fn keys_follow_the_programs_keyboard_modes() {
     shows(&s, &t, ""); // started
     std::thread::sleep(Duration::from_millis(200));
     s.json(&["keys", &t, "up", "ctrl+c", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a"]);
+    std::thread::sleep(Duration::from_secs(2));
+    eprintln!("SCREEN: {:?}", s.hc(&["read", &t]));
+    eprintln!("GET: {:?}", s.json(&["get", &t]));
     shows(&s, &t, "033   O   A 003   a");
     let (code, err) = s.err(&["keys", &t, "hyper+q"]);
     assert_eq!((code, err["error"]["kind"].as_str()), (6, Some("invalid_params")));

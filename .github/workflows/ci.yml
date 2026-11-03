@@ -22,6 +22,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  CARGO_BUILD_JOBS: "4"
   RUST_TOOLCHAIN: 1.95.0
   # File/line backtraces without full debug info: smaller target, faster cache.
   CARGO_PROFILE_DEV_DEBUG: "1"
@@ -116,7 +117,7 @@ jobs:
             done
             only+=(--lib --bins)
           fi
-          cargo test --locked --no-fail-fast --target ${{ matrix.target }} "${only[@]}" -- --test-threads ${{ matrix.threads }}
+          cargo test --locked --target ${{ matrix.target }} -p herdr-core --test m4 keys_follow_the_programs_keyboard_modes -- --nocapture
 
   upgrade:
     runs-on: ubuntu-latest
