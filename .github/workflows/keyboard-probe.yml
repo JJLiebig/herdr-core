@@ -1,0 +1,28 @@
+name: keyboard probe
+on: workflow_dispatch
+jobs:
+  probe:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - shell: python
+        run: |
+          import os, pty, subprocess, tty, select
+          print(subprocess.check_output(['od', '--version']).decode().splitlines()[0])
+          for count in [[], ['-N16']]:
+              master, slave = pty.openpty()
+              tty.setraw(slave)
+              p = subprocess.Popen(['od', '-An', '-c', *count], stdin=slave, stdout=slave)
+              os.close(slave)
+              os.write(master, b'\x1bOA\x03' + b'a' * 12)
+              ready = select.select([master], [], [], 1)[0]
+              print(count, 'first16:', repr(os.read(master, 4096)) if ready else 'no output')
+              if not count:
+                  os.write(master, b'b' * 16)
+                  ready = select.select([master], [], [], 1)[0]
+                  print('after32:', repr(os.read(master, 4096)) if ready else 'no output')
+              p.terminate()
+              p.wait()
+              os.close(master)
