@@ -13,7 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const GENERATION: u32 = 1;
-pub const FEATURES: &[&str] = &["framed", "attach", "events", "status", "shell"];
+pub const FEATURES: &[&str] =
+    &["framed", "attach", "events", "status", "shell", "resize_notifications", "automatic_input"];
 pub const FINISHED_LINES: usize = 1000;
 /// A terminal's identity: fixed at start from whoever starts it.
 pub const IDENTITY_VARS: &[&str] = &["TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM"];
@@ -218,7 +219,9 @@ async fn server_stop(core: Ctx<'_>, _: Empty) -> Result<StopResult, RpcError> {
     if core.restart.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(RpcError::new("unavailable", "the core is restarting", "run it again once it has restarted"));
     }
-    core.shutdown().await;
+    if let Err(e) = core.shutdown().await {
+        eprintln!("core: shutdown registry flush failed: {}", e.message);
+    }
     Ok(StopResult { stopped: true })
 }
 
@@ -267,15 +270,20 @@ async fn terminal_list(core: Ctx<'_>, p: ListParams) -> Result<ListResult, RpcEr
             hidden_finished += r["hidden_finished"].as_u64().unwrap_or(0) as usize;
         }
     }
-    let st = core.lock();
-    let machines = machines.iter().map(|m| crate::remote::view(&st, m)).collect();
+    let machines = {
+        let st = core.lock();
+        machines.iter().map(|m| crate::remote::view(&st, m)).collect()
+    };
+    core.flush_saved().await?;
     Ok(ListResult { terminals, hidden_finished, machines })
 }
 
 async fn terminal_get(core: Ctx<'_>, p: TerminalParams) -> Result<Public, RpcError> {
     let id = resolve(core, &p.terminal)?;
     core.saw(p.caller.as_deref(), id);
-    record(core, id).map(Public)
+    let result = record(core, id).map(Public);
+    core.flush_saved().await?;
+    result
 }
 
 async fn terminal_kill(core: Ctx<'_>, p: TerminalParams) -> Result<Public, RpcError> {
@@ -285,26 +293,33 @@ async fn terminal_kill(core: Ctx<'_>, p: TerminalParams) -> Result<Public, RpcEr
         core.kill(&[id]).await;
     }
     core.saw(p.caller.as_deref(), id); // covers the exit it caused
-    record(core, id).map(Public)
+    let result = record(core, id).map(Public);
+    core.flush_saved().await?;
+    result
 }
 
 async fn terminal_rm(core: Ctx<'_>, p: TerminalParams) -> Result<RemoveResult, RpcError> {
     let id = resolve(core, &p.terminal)?;
-    let mut st = core.lock();
-    if st.reg.terminals.get(&id).is_some_and(|t| t.is_live()) {
-        return Err(RpcError::new(
-            "live",
-            format!("{} is still running", crate::terminals::address(id)),
-            format!("kill it first: hc kill {}", crate::terminals::address(id)),
-        ));
+    {
+        let mut st = core.lock();
+        if st.reg.terminals.get(&id).is_some_and(|t| t.is_live()) {
+            return Err(RpcError::new(
+                "live",
+                format!("{} is still running", crate::terminals::address(id)),
+                format!("kill it first: hc kill {}", crate::terminals::address(id)),
+            ));
+        }
+        core.remove(&mut st, id);
     }
-    core.remove(&mut st, id);
+    core.flush_saved().await?;
     Ok(RemoveResult { removed: crate::terminals::address(id) })
 }
 
 async fn terminal_keep(core: Ctx<'_>, p: KeepParams) -> Result<Public, RpcError> {
     let id = resolve(core, &p.terminal)?;
-    core.set_keep(id, p)
+    let public = core.set_keep(id, p)?;
+    core.flush_saved().await?;
+    Ok(public)
 }
 
 async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcError> {
@@ -317,7 +332,9 @@ async fn terminal_label(core: Ctx<'_>, p: LabelParams) -> Result<Public, RpcErro
         let labels = serde_json::to_value(&st.reg.terminals[&id].labels).unwrap_or_default();
         core.emit_from(&mut st, "labels", id, json!({"labels": labels}), was.as_ref());
     }
-    record(core, id).map(Public)
+    let result = record(core, id).map(Public);
+    core.flush_saved().await?;
+    result
 }
 
 async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcError> {
@@ -327,41 +344,52 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
     let full_screen = core.lock().screens.get(&id).is_some_and(|s| s.alt_screen());
     if full_screen && p.lines > 0 {
         let lines = p.lines.min(FINISHED_LINES);
-        return Ok(match core.stitch(id, lines).await {
+        let result = match core.stitch(id, lines).await {
             Some((text, complete)) => ReadResult { text, complete, how: "stitched".into(), why: None },
             None => {
                 let st = core.lock();
                 let text = st.screens.get(&id).map(|s| crate::stitch::text(&s.screen_rows())).unwrap_or_default();
-                let working =
-                    st.reg.terminals.get(&id).and_then(|t| t.status.as_ref()).is_some_and(|s| s.state == "working");
-                ReadResult { text, complete: false, how: "screen".into(), why: working.then(|| "working".into()) }
+                let why = st
+                    .reg
+                    .terminals
+                    .get(&id)
+                    .and_then(|t| t.status.as_ref())
+                    .filter(|s| matches!(s.state.as_str(), "working" | "blocked" | "error"))
+                    .map(|s| s.state.clone());
+                ReadResult { text, complete: false, how: "screen".into(), why }
             }
-        });
+        };
+        core.flush_saved().await?;
+        return Ok(result);
     }
-    let st = core.lock();
-    let t = st.reg.terminals.get(&id).expect("resolved");
-    let lines = if t.is_live() { p.lines } else { p.lines.min(FINISHED_LINES) };
-    let rows = t.rows as usize;
-    let exact = t.screen == "exact";
-    let text = core.screen_text(&st, id);
-    let mut complete = exact && text.is_some();
-    let text = text.unwrap_or_default();
-    let all: Vec<&str> = text.trim_end_matches('\n').lines().collect();
-    let start = all.len().saturating_sub(rows + lines);
-    // Asked for more than is kept, and more was printed than is kept: some is gone.
-    let kept = all.len().saturating_sub(rows).min(lines);
-    if p.lines > kept && t.printed > (kept + rows) as u64 {
-        complete = false;
-    }
-    if p.lines > 0 && !t.is_live() && t.full_screen {
-        complete = false;
-    }
-    Ok(ReadResult {
-        text: all[start..].join("\n"),
-        complete,
-        how: if p.lines == 0 { "screen" } else { "history" }.into(),
-        why: None,
-    })
+    let result = {
+        let st = core.lock();
+        let t = st.reg.terminals.get(&id).expect("resolved");
+        let lines = if t.is_live() { p.lines } else { p.lines.min(FINISHED_LINES) };
+        let rows = t.rows as usize;
+        let exact = t.screen == "exact";
+        let text = core.screen_text(&st, id);
+        let mut complete = exact && text.is_some();
+        let text = text.unwrap_or_default();
+        let all: Vec<&str> = text.trim_end_matches('\n').lines().collect();
+        let start = all.len().saturating_sub(rows + lines);
+        // Asked for more than is kept, and more was printed than is kept: some is gone.
+        let kept = all.len().saturating_sub(rows).min(lines);
+        if p.lines > kept && t.printed > (kept + rows) as u64 {
+            complete = false;
+        }
+        if p.lines > 0 && !t.is_live() && t.full_screen {
+            complete = false;
+        }
+        ReadResult {
+            text: all[start..].join("\n"),
+            complete,
+            how: if p.lines == 0 { "screen" } else { "history" }.into(),
+            why: None,
+        }
+    };
+    core.flush_saved().await?;
+    Ok(result)
 }
 
 async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult, RpcError> {
@@ -385,13 +413,19 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
     }
     let req = crate::viewers::AttachRequest {
         observe: p.observe,
+        resize_notifications: p.resize_notifications,
         history: p.history,
         size: (p.cols, p.rows),
         display: p.display,
         resumed: p.resumed,
     };
     let channel = core.attach(conn, id, req)?;
-    Ok(AttachResult { channel, terminal: Public(record(core, id)?) })
+    Ok(AttachResult {
+        channel,
+        terminal: Public(record(core, id)?),
+        resize_notifications: p.observe && p.resize_notifications,
+        automatic_input: true,
+    })
 }
 
 async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcError> {
@@ -435,6 +469,7 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
     } else {
         None
     };
+    core.flush_saved().await?;
     Ok(SendResult { status: sent.status, turn: sent.turn, started: sent.started, wait })
 }
 
@@ -491,6 +526,7 @@ async fn terminal_keys(core: Ctx<'_>, p: KeysParams) -> Result<KeysResult, RpcEr
     let id = resolve(core, &p.terminal)?;
     let (status, turn) = core.keys(id, &p.keys).await?;
     core.saw(p.caller.as_deref(), id);
+    core.flush_saved().await?;
     Ok(KeysResult { status, turn })
 }
 
@@ -505,6 +541,7 @@ async fn terminal_interrupt(core: Ctx<'_>, p: InterruptParams) -> Result<Interru
         Interrupted::StillWorking => "still_working",
         Interrupted::Unknown => "unknown",
     };
+    core.flush_saved().await?;
     Ok(InterruptResult { outcome: outcome.into(), key })
 }
 
@@ -560,7 +597,7 @@ fn free_name(core: &Core, st: &crate::runtime::State, name: &str) -> Result<(), 
 
 async fn machine_add(core: Ctx<'_>, p: MachineAddParams) -> Result<crate::machines::Machine, RpcError> {
     let (target, via) = match (p.target, p.via) {
-        (Some(target), None) => (target, false),
+        (Some(target), None) => (crate::machines::ssh_target(target), false),
         (None, Some(command)) => (command, true),
         _ => return Err(RpcError::invalid_params("give either target or via")),
     };

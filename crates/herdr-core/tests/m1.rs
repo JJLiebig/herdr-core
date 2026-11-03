@@ -346,6 +346,26 @@ fn finished_terminals_and_ids_survive_server_stop() {
 }
 
 #[test]
+fn a_failed_registry_write_does_not_break_get_or_stop() {
+    let s = Session::new();
+    let terminal = run(&s, &["sleep", "100"]);
+    let pid = get(&s, &terminal)["pid"].as_i64().unwrap();
+    let core = status(&s)["pid"].as_i64().unwrap();
+    // A directory in place of the temporary file fails even when tests run as root.
+    let tmp = s.root.join("state/herdr-core/test/terminals.tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let label = s.hc(&["label", &terminal, "disk=failed"]);
+    let get = s.hc(&["get", &terminal]);
+    let stop = s.hc(&["server", "stop"]);
+    std::fs::remove_dir(tmp).unwrap();
+    for (command, output) in [("label", label), ("get", get), ("stop", stop)] {
+        assert!(output.status.success(), "{command}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    assert!(!pid_alive(pid), "stop left the program running");
+    wait_until("core stops after a failed disk write", || !pid_alive(core));
+}
+
+#[test]
 fn server_stop_typed_inside_a_terminal_still_stops_the_core() {
     let s = Session::new();
     let core = status(&s)["pid"].as_i64().unwrap();
@@ -531,7 +551,7 @@ impl Drop for RawHolder {
 fn raw_holder(s: &Session, name: &str) -> (RawHolder, std::path::PathBuf) {
     let socket = s.root.join(format!("run/{name}.sock"));
     let holder = s.cmd().env("HC_HOLDER_GRACE_MS", "60000").arg("hold").arg("--socket").arg(&socket).spawn().unwrap();
-    wait_until("holder listening", || socket.exists());
+    wait_until("holder listening", || std::os::unix::net::UnixStream::connect(&socket).is_ok());
     (RawHolder(holder), socket)
 }
 

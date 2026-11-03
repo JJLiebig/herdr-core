@@ -79,6 +79,7 @@ impl Core {
             let Some(holder) = st.current() else { break };
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
+            let previous = t.recovery.as_ref().map(|_| t.clone());
             let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
             let (argv, cwd) = t.prepare_recovery(&env, &shell);
             let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
@@ -97,11 +98,20 @@ impl Core {
             t.stop = None;
             t.paste_gap_ms = None;
             let spawn = proto::Spawn { argv: t.argv.clone(), env, cwd, cols: t.cols, rows: t.rows };
+            if let Some(previous) = previous {
+                let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
+                if let Err(e) = self.save_durable(bytes) {
+                    st.reg.terminals.insert(id, previous);
+                    eprintln!("core: cannot save recovery claim for {}: {e}", crate::terminals::address(id));
+                    continue;
+                }
+            } else {
+                self.save(&st);
+            }
+            let t = st.reg.terminals.get(&id).expect("claimed");
             let mut screen = ghostty_vt::Terminal::new(t.cols, t.rows, self.history_bytes());
             screen.set_xtversion(&t.identity);
             st.screens.insert(id, screen);
-            // Claim and persist before sending: a slow holder never gets a second spawn.
-            self.save(&st);
             if let Some(link) = st.link(id) {
                 link.send(&proto::json_frame(proto::SPAWN, id, &spawn));
             }

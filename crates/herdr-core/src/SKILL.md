@@ -67,6 +67,16 @@ hc read --lines 100 review          # screen plus history; waits return status o
 hc interrupt review                # stop its current turn, not the process
 ```
 
+In human-readable output, `ls` shows the `where` label or the current folder;
+`get` shows the full current folder. Both fall back to the launch folder when
+it is unknown. JSON keeps `cwd` as the launch folder; `get` also includes the
+current folder in `foreground.cwd`.
+
+`read --lines 0` reads only the visible screen. History reads may scroll a
+full-screen app, then restore its view. While its status is `working`,
+`blocked` or `error`, history reads return only the screen immediately,
+marked incomplete with `why` set to that status; no scroll input is sent.
+
 Keep doing useful work while children work. When you need their results:
 
 ```sh
@@ -104,6 +114,11 @@ acknowledge. hc itself notifies you when a child cannot report (blocked,
 error, exited); inspect its screen.
 
 ## Run programs
+
+API clients that already know a terminal's pane size can pass `size: {cols, rows}`
+to `terminal.run` (both positive). It applies before the program starts. Omit it
+for the unchanged configured headless size (default 200×120); later viewers
+still resize the terminal normally.
 
 ```sh
 hc run cargo test                  # wait, stream output, return its exit code
@@ -194,6 +209,10 @@ keeps the last unambiguous process.
   and recovery. Each list item is one argument. Changes apply on the next
   launch; running programs stay running. A missing executable reports
   `spawn_failed`; recovery retries and logs launch errors in `holder.log`.
+- Programs get the login session's environment. A local `DISPLAY` or
+  `WAYLAND_DISPLAY` is left out only when its socket is missing or refuses
+  connections. Host displays (including SSH forwarding) stay as they are.
+  A missing `XAUTHORITY` file does not remove a display.
 - `hc keep <t>` (or `run --keep`) replaces a lost program with a shell,
   never reruns a task. `hc keep <t> --off` disables recovery. Signal death
   without an exit code is loss too. After a grace delay, recovery runs on
@@ -231,6 +250,10 @@ keeps the last unambiguous process.
 - Planned restarts and updates preserve the core's launch environment for new
   terminals; per-terminal API `env` overrides still apply. A stop followed by a
   fresh start uses the new launcher's environment.
+- On macOS, desktop starts use a one-shot launchd job so quitting the launching
+  app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
+  falls back to a direct child and logs the reason in `core.log`; that core may
+  end with its launching app.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include

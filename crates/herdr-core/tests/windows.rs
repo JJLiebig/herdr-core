@@ -1050,8 +1050,10 @@ fn explicit_recovery_uses_one_same_id_command_and_adopts_surviving_holders() {
     let dir = s.root.join("fixed recovery cwd");
     std::fs::create_dir(&dir).unwrap();
     let marker = dir.join("starts.txt");
-    let script =
-        s.file("recover.ps1", "Add-Content starts.txt 'start'\nWrite-Output 'RECOVERED-STATIC'\nStart-Sleep 100\n");
+    let script = s.file(
+        "recover.ps1",
+        "Set-Content scope.txt $env:HC_SCOPE\nAdd-Content starts.txt 'start'\nWrite-Output 'RECOVERED-STATIC'\nStart-Sleep 100\n",
+    );
     let state: Value = serde_json::from_slice(
         &std::fs::read(s.root.join("state/herdr-core").join(&s.name).join("terminals.json")).unwrap(),
     )
@@ -1092,8 +1094,26 @@ fn explicit_recovery_uses_one_same_id_command_and_adopts_surviving_holders() {
     assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
     assert_eq!(s.json(&["get", &t])["cwd"], dir.display().to_string());
     assert_eq!(s.json(&["ls"])["terminals"].as_array().unwrap().len(), 1);
+    let state_dir = s.root.join("state/herdr-core").join(&s.name);
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_u64().unwrap();
+    let blocked = state_dir.join("terminals.tmp");
+    std::fs::create_dir(&blocked).unwrap();
+    Command::new("taskkill").args(["/F", "/PID", &holder.to_string()]).output().unwrap();
+    wait_until("recovery claim write fails", || {
+        std::fs::read_to_string(state_dir.join("core.log")).is_ok_and(|log| log.contains("cannot save recovery claim"))
+    });
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1, "failed claim must not spawn");
+    std::fs::remove_dir(&blocked).unwrap();
+    wait_until("recovery waits for a durable claim", || {
+        std::fs::read_to_string(&marker).is_ok_and(|starts| starts.lines().count() == 2)
+    });
+    let state: Value = serde_json::from_slice(&std::fs::read(state_dir.join("terminals.json")).unwrap()).unwrap();
+    assert_eq!(
+        state["terminals"]["1"]["scope"].as_str().unwrap(),
+        std::fs::read_to_string(dir.join("scope.txt")).unwrap().trim()
+    );
     s.json(&["server", "restart"]);
-    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1, "no duplicate on adoption");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 2, "no duplicate on adoption");
     assert_eq!(s.json(&["kill", &t])["reason"], "killed");
     assert_eq!(s.json(&["get", &t])["state"], "finished");
 }

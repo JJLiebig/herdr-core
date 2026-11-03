@@ -39,6 +39,7 @@ pub fn dir(paths: &Paths) -> PathBuf {
 }
 
 fn parse(name: &str, text: &str) -> Result<Template, String> {
+    let text = text.replace("\r\n", "\n");
     let rest = text.strip_prefix("---\n").ok_or("no frontmatter (start the file with ---)")?;
     let end = rest.find("\n---").ok_or("frontmatter never closes (---)")?;
     let (front, body) = (&rest[..end], &rest[end + 4..]);
@@ -123,7 +124,7 @@ pub struct FirstMessage {
     pub turn: Option<u64>,
 }
 
-fn ready_timeout() -> Duration {
+pub(crate) fn ready_timeout() -> Duration {
     let ms = std::env::var("HC_READY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     Duration::from_millis(ms)
 }
@@ -183,6 +184,17 @@ pub fn first_message(t: &Template, prompt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crlf_frontmatter_and_body_match_lf() {
+        let text = "---\nname: reviewer\ndescription: Review code\ncommand: pi\nready: quiet\n\
+                    submit: enter\nstop: ctrl-c\npaste_gap_ms: 10\n---\nFirst line.\nSecond line.\n";
+        let expected = parse("reviewer", text).unwrap();
+        assert_eq!(expected.body, "First line.\nSecond line.");
+        assert_eq!(parse("reviewer", &text.replace('\n', "\r\n")).unwrap(), expected);
+        let mixed = text.replacen("---\n", "---\r\n", 1).replace("Second line.\n", "Second line.\r\n");
+        assert_eq!(parse("reviewer", &mixed).unwrap(), expected);
+    }
 
     #[test]
     fn frontmatter_and_body_parse_like_the_spec_example() {

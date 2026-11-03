@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(test)]
+mod tests;
+
 /// What a viewer's own terminal looks like, reported by the client.
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Default, Debug, PartialEq)]
 pub struct Display {
@@ -29,6 +32,8 @@ pub struct Viewer {
     pub conn: Arc<Conn>,
     pub channel: u32,
     pub observe: bool,
+    resize_notifications: bool,
+    repaint_pending: bool,
     size: (u16, u16),
     /// None: not active since it came back after a dropped line.
     active_at: Option<Instant>,
@@ -45,6 +50,7 @@ fn rgb(hex: &Option<String>) -> Option<Rgb> {
 
 pub struct AttachRequest {
     pub observe: bool,
+    pub resize_notifications: bool,
     pub history: usize,
     pub size: (u16, u16),
     pub display: Display,
@@ -71,6 +77,8 @@ impl Core {
             conn: conn.clone(),
             channel,
             observe: req.observe,
+            resize_notifications: req.observe && req.resize_notifications,
+            repaint_pending: false,
             size: req.size,
             active_at: (!req.resumed).then(Instant::now),
             display: req.display,
@@ -78,8 +86,14 @@ impl Core {
         });
         self.apply_size(&mut st, id);
         let paint = first_paint(&st, id, req.history);
+        st.viewers.get_mut(&id).unwrap().last_mut().unwrap().repaint_pending = false;
         conn.with(|out| {
-            out.open(channel);
+            out.open_paused(channel);
+            if req.observe && req.resize_notifications {
+                let t = &st.reg.terminals[&id];
+                let size = [t.cols.to_le_bytes(), t.rows.to_le_bytes()].concat();
+                out.resize(channel, &size);
+            }
             out.data(channel, &paint);
         });
         Ok(channel)
@@ -130,6 +144,9 @@ impl Core {
         });
         let mut behind = Vec::new();
         for (index, v) in st.viewers.get_mut(&id).into_iter().flatten().enumerate().filter(|_| !scrolling) {
+            if v.repaint_pending {
+                continue;
+            }
             let bytes = if v.recovering {
                 let Some(paint) = &recovered else { continue };
                 v.recovering = false;
@@ -180,8 +197,8 @@ impl Core {
             self.status_changed(st, id, change);
             word_changed |= word(st) != was;
         }
-        // Losing the holder too (a reboot) leaves no tail to replay: a new word, and
-        // with it a turn or news, must already be on disk. Messages and progress can wait.
+        // Losing the holder too (a reboot) leaves no tail to replay: queue a new word,
+        // and with it a turn or news, for immediate persistence. Messages and progress can wait.
         if word_changed { self.save(st) } else { self.save_soon() }
     }
 
@@ -224,10 +241,15 @@ impl Core {
         Some(id)
     }
 
-    pub fn viewer_input(&self, conn: &Arc<Conn>, channel: u32, bytes: &[u8]) {
+    pub fn viewer_input(&self, conn: &Arc<Conn>, channel: u32, bytes: &[u8], automatic: bool) {
         let mut st = self.lock();
-        if let Some(id) = self.touch(&mut st, conn, channel, |_| {}) {
-            let now = st.gates.entry(id).or_default().human(bytes);
+        let id = if automatic {
+            Self::viewer(&mut st, conn, channel).filter(|(_, v)| !v.observe).map(|(id, _)| id)
+        } else {
+            self.touch(&mut st, conn, channel, |_| {})
+        };
+        if let Some(id) = id {
+            let now = st.gates.entry(id).or_default().viewer(bytes, !automatic);
             if let Some(link) = st.link(id) {
                 link.input(id, &now);
             }
@@ -311,8 +333,41 @@ impl Core {
         if let Some(link) = st.link(id) {
             link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size { cols, rows }));
         }
+        let size = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
+        for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| v.resize_notifications) {
+            v.repaint_pending = true;
+            v.conn.with(|out| out.resize(v.channel, &size));
+        }
         self.save_soon();
         self.emit(st, "size", id, serde_json::json!({"cols": cols, "rows": rows}));
+    }
+
+    /// Serialize only the latest grid, when a viewer has credit to receive it.
+    pub fn prepare_repaints(&self, conn: &Arc<Conn>) {
+        let mut st = self.lock();
+        let ids: Vec<u32> = st.viewers.keys().copied().collect();
+        for id in ids {
+            self.queue_resize_paints(&mut st, id, Some(conn));
+        }
+    }
+
+    /// On exit there will be no later writer pass over this screen.
+    pub(crate) fn queue_resize_paints(&self, st: &mut State, id: u32, conn: Option<&Arc<Conn>>) {
+        let ready = |v: &Viewer| {
+            v.repaint_pending && conn.is_none_or(|conn| Arc::ptr_eq(&v.conn, conn) && conn.outbox().can_send(v.channel))
+        };
+        if !st.viewers.get(&id).into_iter().flatten().any(ready) {
+            return;
+        }
+        let paint = first_paint(st, id, 0);
+        let recovering = st.screens[&id].continuation().is_none();
+        for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| ready(v)) {
+            v.conn.with(|out| {
+                out.data(v.channel, &paint);
+            });
+            v.repaint_pending = false;
+            v.recovering = recovering;
+        }
     }
 
     fn apply_display(&self, st: &mut State, id: u32, display: Option<&Display>) {
@@ -333,6 +388,8 @@ impl Core {
 /// must see them too; a viewer repainted after falling behind gets the mode
 /// either way).
 pub(crate) fn first_paint(st: &State, id: u32, history: usize) -> Vec<u8> {
+    #[cfg(test)]
+    tests::PAINTS.with(|n| n.set(n.get() + 1));
     let screen = &st.screens[&id];
     let mut paint = paint_state(st, id, screen.paint(history));
     if let Some(continuation) = screen.continuation() {

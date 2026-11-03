@@ -60,7 +60,7 @@ impl Core {
         }
         let was = t.resume_session.replace(session.into());
         let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
-        if let Err(e) = crate::paths::write_atomic(&self.paths.state.join("terminals.json"), &bytes) {
+        if let Err(e) = self.save_durable(bytes) {
             st.reg.terminals.get_mut(&id).expect("live terminal").resume_session = was;
             eprintln!("core: cannot save resume session for {}: {e}", crate::terminals::address(id));
         }
@@ -112,7 +112,7 @@ impl Core {
         }
         // A successful registration means it reached disk, before any acknowledgement or event.
         let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
-        if let Err(e) = crate::paths::write_atomic(&self.paths.state.join("terminals.json"), &bytes) {
+        if let Err(e) = self.save_durable(bytes) {
             st.reg.terminals.insert(id, was);
             return Err(RpcError::internal(format!("cannot save keep configuration: {e}")));
         }
@@ -230,6 +230,10 @@ mod tests {
             st.killing.clear();
         }
         // A directory at the temp filename forces a real write failure on every OS.
+        {
+            let st = core.lock();
+            core.save_durable(serde_json::to_vec(&st.reg).unwrap()).unwrap();
+        }
         std::fs::create_dir(core.paths.state.join("terminals.tmp")).unwrap();
         assert_eq!(core.set_keep(id, params()).err().unwrap().kind, "internal");
         assert!(!core.lock().reg.terminals[&id].keep);
