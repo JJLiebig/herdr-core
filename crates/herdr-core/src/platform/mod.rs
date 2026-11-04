@@ -2,6 +2,9 @@
 //! surface: connections, terminals, process trees, the console, files.
 //! Everything above it is shared.
 
+mod herdr_local;
+pub(crate) use herdr_local::{recovery_command, recovery_shell};
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]

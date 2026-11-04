@@ -921,7 +921,11 @@ pub fn spawn_pty(
     rows: u16,
 ) -> io::Result<(Pty, Process)> {
     let mut cmd = command_line(argv, env)?;
-    let mut block = env_block(env);
+    let mut env = env.clone();
+    let notice = env.remove(super::herdr_local::NOTICE_ENV);
+    let printer_cmd =
+        notice.as_deref().map(|s| command_line(&super::herdr_local::notice_command(s), &env)).transpose()?;
+    let mut block = env_block(&env);
     let cwd = wide(cwd.as_ref());
     unsafe {
         // Ctrl+C ignored is inherited (an ssh session sets it): the program
@@ -1003,12 +1007,25 @@ pub fn spawn_pty(
             &si.StartupInfo,
             &mut pi,
         );
-        DeleteProcThreadAttributeList(list);
-        check(started)?;
+        if started == 0 {
+            let error = io::Error::last_os_error();
+            DeleteProcThreadAttributeList(list);
+            return Err(error);
+        }
         let handle = OwnedHandle::from_raw_handle(pi.hProcess as RawHandle);
         let thread = OwnedHandle::from_raw_handle(pi.hThread as RawHandle);
         AssignProcessToJobObject(job.as_raw_handle() as HANDLE, handle.as_raw_handle() as HANDLE);
-        ResumeThread(thread.as_raw_handle() as HANDLE);
+        let resumed = super::herdr_local::resume_with_notice(
+            printer_cmd,
+            flags,
+            block.as_mut_ptr().cast(),
+            cwd.as_ptr(),
+            &si.StartupInfo,
+            job.as_raw_handle() as HANDLE,
+            thread,
+        );
+        DeleteProcThreadAttributeList(list);
+        resumed?;
         // The console holds its own ends now.
         drop((in_r, out_w));
         let process = Process { pid: pi.dwProcessId, handle, console: console.clone() };

@@ -34,6 +34,9 @@ impl Core {
             let reason = t.reason.clone().filter(|r| r != "spawn_pending").unwrap_or_else(|| "holder_lost".into());
             self.record_finish(st, id, proto::Exit { code: None, signal: None }, &reason);
         } else {
+            if t.recovery.as_ref().is_some_and(|r| r.argv == t.argv) {
+                t.reason = Some("recovery_spawn_failed".into());
+            }
             t.schedule_restart(now_ms());
         }
         self.save(st);
@@ -80,8 +83,9 @@ impl Core {
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
             let previous = t.recovery.as_ref().map(|_| t.clone());
-            let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
-            let (argv, cwd) = t.prepare_recovery(&env, &shell);
+            t.title.clear();
+            let mut env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
+            let (argv, cwd) = t.prepare_recovery(&mut env, &shell);
             let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
             t.scope = Some(scope);
             t.holder = Some(instance);
@@ -89,7 +93,6 @@ impl Core {
             t.cwd = cwd.clone();
             t.template = None;
             t.reported = false;
-            t.title.clear();
             t.full_screen = false;
             t.win32_input = false;
             t.printed = 0;
