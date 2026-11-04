@@ -236,6 +236,10 @@ fn service_env(mut env: BTreeMap<String, String>) -> BTreeMap<String, String> {
 /// flooding the user manager until it starts nothing. KillMode: when the core
 /// or holder exits, nothing else goes with it.
 fn unit_args(name: &str, environment: &Path, unset: &[&str], log: &Path, here: &Path, version: u32) -> Vec<OsString> {
+    // Saved restart absences can also be SSH_LOGIN names; systemd rejects duplicates.
+    let mut unset = unset.to_vec();
+    unset.sort_unstable();
+    unset.dedup();
     let mut out: Vec<OsString> = ["--user", "--quiet", "--collect", "--service-type=exec"].map(OsString::from).into();
     if version >= 243 {
         out.extend([OsString::from("-p"), OsString::from("OOMPolicy=continue")]);
@@ -393,7 +397,7 @@ mod tests {
         let args = super::unit_args(
             "hc-hold-1",
             Path::new("/run/user/1/hc-hold-1/environment"),
-            &["HC_SCOPE"],
+            &["SSH_CONNECTION", "SSH_CLIENT", "HC_SCOPE", "SSH_CONNECTION", "SSH_CLIENT"],
             Path::new("/s/x.log"),
             Path::new("/"),
             259,
@@ -405,7 +409,7 @@ mod tests {
             "RuntimeDirectory=hc-hold-1",
             "RuntimeDirectoryMode=0700",
             "RuntimeDirectoryPreserve=restart",
-            "UnsetEnvironment=HC_SCOPE",
+            "UnsetEnvironment=HC_SCOPE SSH_CLIENT SSH_CONNECTION",
             "OOMPolicy=continue",
             "WorkingDirectory=/",
         ] {
