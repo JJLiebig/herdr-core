@@ -194,6 +194,44 @@ Start-Sleep -Milliseconds 100
 }
 
 #[test]
+fn templateless_codex_uses_right_enter_only_on_windows() {
+    for app in ["codex", "other"] {
+        let s = Session::new();
+        let probe = s.file(
+            "default-input.ps1",
+            &format!(
+                r#"$e = [char]27
+[Console]::Out.Write("$e]7501;state=idle:app={app}$e\")
+[Console]::Out.Flush()
+while (!(Test-Path (Join-Path $PSScriptRoot 'release'))) {{ Start-Sleep -Milliseconds 10 }}
+$keys = @()
+do {{
+    $key = [Console]::ReadKey($true)
+    $keys += $key.Key.ToString()
+}} until ($key.Key -eq 'Enter')
+Start-Sleep -Milliseconds 100
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'keys.json'), (ConvertTo-Json @{{keys=$keys; extra=[Console]::KeyAvailable}}))
+"#
+            ),
+        );
+        let t = s.bg(&["powershell.exe", "-NoProfile", "-File", &probe]);
+        wait_until("reported app", || s.json(&["get", &t])["status"]["app"] == app);
+        assert!(s.json(&["get", &t])["submit"].is_null());
+        assert_eq!(s.out(&["send", &t, "abc"]).0, 0);
+        s.file("release", "");
+        wait_until("default input consumed", || s.json(&["get", &t])["state"] == "finished");
+        let keys: Value = serde_json::from_slice(&std::fs::read(s.root.join("keys.json")).unwrap()).unwrap();
+        let expected = if app == "codex" {
+            json!(["A", "B", "C", "RightArrow", "Enter"])
+        } else {
+            json!(["A", "B", "C", "Enter"])
+        };
+        assert_eq!(keys["keys"], expected, "app={app}");
+        assert_eq!(keys["extra"], false, "submission must not be retried");
+    }
+}
+
+#[test]
 fn child_notices_use_the_parent_templates_submit_keys() {
     let s = Session::new();
     let probe = s.file(
@@ -239,7 +277,10 @@ fn template_escape_and_character_are_separate_keys() {
     let s = Session::new();
     let probe = s.file(
         "escape.ps1",
-        r#"[Console]::WriteLine('READER_READY')
+        r#"$e = [char]27
+[Console]::Out.Write("$e]7501;state=idle:app=codex$e\")
+[Console]::Out.Flush()
+[Console]::WriteLine('READER_READY')
 $keys = @()
 do {
     $key = [Console]::ReadKey($true)
