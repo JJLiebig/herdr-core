@@ -22,8 +22,7 @@ The upstream instructions follow unchanged.
   serialize heavy Rust builds.
 - Upstream PRs (`herdrdev/*`): local review, then comment `@greptileai review`
   on each pushed head until Greptile scores 5/5 with no open comments. Codex
-  isn't enabled upstream: request GitHub Codex review (`@codex review`, or the
-  `/review-suite` GitHub review) only on the user's own repositories.
+  isn't enabled upstream, so no codex github review as per review-suite.
 - Keep `FORK_LEDGER.md` as a current capability map, not a changelog. Update a
   capability's owned files, required seams and retirement condition together.
 - User-approved private fork work does not wait for upstream approval. Changes
