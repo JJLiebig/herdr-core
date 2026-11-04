@@ -32,11 +32,14 @@ pub(crate) fn recovery_shell(
 ) -> Vec<String> {
     #[cfg(unix)]
     {
-        // Failed exec stays a kept loss; successful exec discards the trap.
+        // Bash's POSIX mode skips EXIT traps on exec failure unless execfail is set.
         let mut argv = vec![
             "/bin/sh".into(),
             "-c".into(),
-            format!("printf '%s\\n' {}; trap 'kill -KILL $$' EXIT; exec \"$@\"", literal(&notice_text(notice))),
+            format!(
+                "printf '%s\\n' {}; if [ -n \"${{BASH_VERSION-}}\" ]; then shopt -s execfail 2>/dev/null || :; fi; trap 'kill -KILL $$' EXIT; exec \"$@\"",
+                literal(&notice_text(notice))
+            ),
             "sh".into(),
         ];
         argv.extend_from_slice(shell);
@@ -63,6 +66,23 @@ pub(super) fn notice_command(notice: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn bash_exec_failure_is_signaled_and_success_preserves_exit_code() {
+        use std::os::unix::process::ExitStatusExt;
+        for (shell, code, signal) in [
+            (vec!["/hc-missing-executable".into()], None, Some(libc::SIGKILL)),
+            (vec!["/bin/sh".into(), "-c".into(), "exit 7".into()], Some(7), None),
+        ] {
+            let mut argv = super::recovery_shell(&shell, "notice", &mut Default::default());
+            argv[0] = "/bin/bash".into();
+            argv.insert(1, "--posix".into());
+            let output = std::process::Command::new(&argv[0]).args(&argv[1..]).output().unwrap();
+            assert_eq!(output.status.code(), code);
+            assert_eq!(output.status.signal(), signal);
+        }
+    }
+
     #[test]
     fn notice_is_literal() {
         let notice = "folder's $(exit)\x1b]2;title\x07\nResume:";
