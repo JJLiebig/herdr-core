@@ -79,6 +79,42 @@ impl Core {
         }
     }
 
+    pub(crate) async fn resume_in_shell(&self, id: u32, scope: String, command: String) {
+        let deadline = tokio::time::Instant::now() + crate::templates::ready_timeout();
+        loop {
+            let ready = {
+                let st = self.lock();
+                let Some(t) = st.reg.terminals.get(&id).filter(|t| t.is_live() && t.scope.as_ref() == Some(&scope))
+                else {
+                    return;
+                };
+                t.pid.is_some() && st.last_output.get(&id).is_some_and(|at| at.elapsed() >= crate::input::OUTPUT_SETTLE)
+            };
+            if ready {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                eprintln!("core: recovery shell for {} did not settle", crate::terminals::address(id));
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let result = self
+            .type_in(id, crate::input::quiet(), true, |st, t| {
+                if t.scope.as_ref() != Some(&scope) || !t.keep || t.recovery.is_some() || t.status.is_some() {
+                    return Err(RpcError::new("unavailable", "recovery shell changed before resume", ""));
+                }
+                let screen = &st.screens[&id];
+                let mut steps = vec![crate::input::Step::Write(crate::input::paste(screen.dec_mode(2004), &command))];
+                steps.extend(crate::input::submit_steps(screen, t)?);
+                Ok(((), steps))
+            })
+            .await;
+        if let Err(e) = result {
+            eprintln!("core: cannot type recovery command for {}: {}", crate::terminals::address(id), e.message);
+        }
+    }
+
     pub(crate) fn set_keep(&self, id: u32, p: KeepParams) -> Result<Public, RpcError> {
         let mut st = self.lock();
         let t = st.reg.terminals.get(&id).ok_or_else(|| RpcError::invalid_params("terminal no longer exists"))?;
@@ -149,11 +185,19 @@ impl Core {
 }
 
 impl Terminal {
+    pub(crate) fn osc_resume_command(&self, commands: &BTreeMap<String, String>) -> Option<String> {
+        if self.recovery.is_some() {
+            return None;
+        }
+        let (app, session) = (self.resume_app.as_ref()?, self.resume_session.as_ref()?);
+        let command = commands.get(app).map(String::as_str).or_else(|| crate::platform::resume_command(app))?;
+        (!command.trim().is_empty()).then(|| command.replace("{session}", session))
+    }
+
     pub(crate) fn prepare_recovery(
         &mut self,
         env: &mut BTreeMap<String, String>,
         shell: &[String],
-        commands: &BTreeMap<String, Vec<String>>,
     ) -> (Vec<String>, String) {
         if let Some(recovery) = &self.recovery
             && Path::new(&recovery.cwd).is_dir()
@@ -179,13 +223,6 @@ impl Terminal {
             );
             self.title = notice.clone();
             crate::platform::recovery_shell(shell, &notice, env)
-        } else if self.reason.as_deref() != Some("recovery_spawn_failed")
-            && let Some(app) = &self.resume_app
-            && let Some(session) = &self.resume_session
-            && let Some(command) = commands.get(app).cloned().or_else(|| crate::platform::resume_command(app))
-            && command.first().is_some_and(|s| !s.is_empty())
-        {
-            command.iter().map(|arg| arg.replace("{session}", session)).collect()
         } else {
             shell.to_vec()
         };
@@ -343,7 +380,7 @@ mod tests {
         let mut env = BTreeMap::from([("HOME".into(), root.display().to_string())]);
         let shell = vec!["configured-shell".into()];
         for expected in [&last, &launch, &root] {
-            let (argv, cwd) = t.prepare_recovery(&mut env, &shell, &BTreeMap::new());
+            let (argv, cwd) = t.prepare_recovery(&mut env, &shell);
             assert_eq!(cwd, expected.display().to_string());
             assert_ne!(argv, recovery.argv);
             assert_eq!(t.recovery.as_ref(), Some(&recovery));
@@ -352,7 +389,7 @@ mod tests {
             }
         }
         std::fs::create_dir(&recovery.cwd).unwrap();
-        assert_eq!(t.prepare_recovery(&mut env, &shell, &BTreeMap::new()), (recovery.argv, recovery.cwd));
+        assert_eq!(t.prepare_recovery(&mut env, &shell), (recovery.argv, recovery.cwd));
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -494,7 +531,7 @@ mod tests {
         {
             let mut st = core.lock();
             let shell = vec!["configured-shell".into()];
-            let commands = BTreeMap::from([("custom".into(), vec!["agent".into(), "--resume={session}".into()])]);
+            let commands = BTreeMap::from([("custom".into(), "agent --resume={session}".into())]);
             for clear in
                 ["state=clear", "state=idle:app=codex", "state=idle:session=01234567-89ab-cdef-0123-456789abcdef"]
             {
@@ -505,25 +542,17 @@ mod tests {
                     b"\x1b]7501;state=idle:app=custom:session=01234567-89ab-cdef-0123-456789abcdef\x07",
                 );
                 let t = st.reg.terminals.get_mut(&id).unwrap();
+                assert_eq!(t.prepare_recovery(&mut BTreeMap::new(), &shell).0, shell);
                 assert_eq!(
-                    t.prepare_recovery(&mut BTreeMap::new(), &shell, &commands).0,
-                    vec!["agent", "--resume=01234567-89ab-cdef-0123-456789abcdef"]
+                    t.osc_resume_command(&commands).as_deref(),
+                    Some("agent --resume=01234567-89ab-cdef-0123-456789abcdef")
                 );
-                assert_eq!(t.prepare_recovery(&mut BTreeMap::new(), &shell, &BTreeMap::new()).0, shell);
-                t.reason = Some("holder_lost".into());
-                core.spawn_failed(&mut st, id);
-                let t = st.reg.terminals.get_mut(&id).unwrap();
-                assert_eq!(t.prepare_recovery(&mut BTreeMap::new(), &shell, &commands).0, shell);
-                assert!(t.resume_session.is_some(), "failed launch preserves the binding for a later loss");
-                t.reason = Some("holder_lost".into());
-                assert_eq!(t.prepare_recovery(&mut BTreeMap::new(), &shell, &commands).0[0], "agent");
-                t.holder = Some("holder".into());
-                t.pid = Some(1);
+                assert!(t.osc_resume_command(&BTreeMap::new()).is_none());
                 core.output(&mut st, id, "holder", format!("\x1b]7501;{clear}\x07").as_bytes());
                 assert!(disk_session().is_none());
                 let t = st.reg.terminals.get_mut(&id).unwrap();
                 assert!(t.resume_app.is_none());
-                assert_eq!(t.prepare_recovery(&mut BTreeMap::new(), &shell, &commands).0, shell);
+                assert_eq!(t.prepare_recovery(&mut BTreeMap::new(), &shell).0, shell);
             }
         }
         core.set_keep(id, off()).unwrap();
@@ -551,6 +580,7 @@ mod tests {
             core.set_keep(id, register()).unwrap().0.resume_session.as_deref(),
             Some("fedcba98-7654-3210-fedc-ba9876543210")
         );
+        assert!(core.lock().reg.terminals[&id].osc_resume_command(&BTreeMap::new()).is_none());
         {
             let mut st = core.lock();
             for reason in ["holder_lost", "server_stop"] {
@@ -577,7 +607,7 @@ mod tests {
                 );
             }
             let t = st.reg.terminals.get_mut(&id).unwrap();
-            t.prepare_recovery(&mut BTreeMap::new(), &["configured-shell".into()], &BTreeMap::new());
+            t.prepare_recovery(&mut BTreeMap::new(), &["configured-shell".into()]);
             assert_eq!(t.resume_session.as_deref(), Some("fedcba98-7654-3210-fedc-ba9876543210"));
             t.holder = Some("holder".into());
             // Drain deferred status saves before occupying the writer's temporary path.

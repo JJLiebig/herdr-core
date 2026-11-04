@@ -34,8 +34,7 @@ impl Core {
             let reason = t.reason.clone().filter(|r| r != "spawn_pending").unwrap_or_else(|| "holder_lost".into());
             self.record_finish(st, id, proto::Exit { code: None, signal: None }, &reason);
         } else {
-            if t.recovery.as_ref().is_some_and(|r| r.argv == t.argv) || (t.recovery.is_none() && t.resume_app.is_some())
-            {
+            if t.recovery.as_ref().is_some_and(|r| r.argv == t.argv) {
                 t.reason = Some("recovery_spawn_failed".into());
             }
             t.schedule_restart(now_ms());
@@ -88,9 +87,10 @@ impl Core {
             let previous = (t.recovery.is_some() || t.resume_app.is_some()).then(|| t.clone());
             t.title.clear();
             let mut env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
-            let (argv, cwd) = t.prepare_recovery(&mut env, &shell, &commands);
+            let resume = t.osc_resume_command(&commands);
+            let (argv, cwd) = t.prepare_recovery(&mut env, &shell);
             let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
-            t.scope = Some(scope);
+            t.scope = Some(scope.clone());
             t.holder = Some(instance);
             t.argv = argv;
             t.cwd = cwd.clone();
@@ -118,8 +118,15 @@ impl Core {
             let mut screen = ghostty_vt::Terminal::new(t.cols, t.rows, self.history_bytes());
             screen.set_xtversion(&t.identity);
             st.screens.insert(id, screen);
+            st.last_output.remove(&id);
             if let Some(link) = st.link(id) {
                 link.send(&proto::json_frame(proto::SPAWN, id, &spawn));
+                if let Some(command) = resume {
+                    let core = self.clone();
+                    tokio::spawn(async move {
+                        core.resume_in_shell(id, scope, command).await;
+                    });
+                }
             }
         }
     }

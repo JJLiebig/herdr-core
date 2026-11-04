@@ -6,9 +6,9 @@ use std::path::Path;
 
 #[derive(Deserialize, Default)]
 pub struct Config {
-    /// App name to resume argv; {session} is replaced with the reported UUID.
+    /// App name to shell resume command; {session} is replaced with the reported UUID.
     #[serde(default)]
-    pub resume_commands: std::collections::BTreeMap<String, Vec<String>>,
+    pub resume_commands: std::collections::BTreeMap<String, String>,
     /// Executable and arguments for new shells (default: this machine's shell).
     pub shell: Option<Vec<String>>,
     /// The chord that detaches `hc attach`: `ctrl+<key>`, default `ctrl+\`.

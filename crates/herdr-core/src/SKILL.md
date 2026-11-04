@@ -241,7 +241,8 @@ keeps the last unambiguous process.
   connections. Host displays (including SSH forwarding) stay as they are.
   A missing `XAUTHORITY` file does not remove a display.
 - `hc keep <t>` (or `run --keep`) recovers a lost program with a shell
-  or its registered/reported resume command. `hc keep <t> --off` disables recovery. Signal death
+  or its registered resume command. OSC-bound agents resume inside the shell.
+  `hc keep <t> --off` disables recovery. Signal death
   without an exit code is loss too. After a grace delay, recovery runs on
   every OS, including after a host shutdown. On macOS, shutdown warnings
   preserve kept programs even if they catch a signal and exit with a code;
@@ -269,12 +270,15 @@ keeps the last unambiguous process.
   replaces the binding. Invalid UUIDs and child records are ignored; a root
   `state=clear` or missing/empty app or session clears the binding. Only live
   output binds; replay and holder loss preserve the last saved binding.
-  On loss, explicit recovery takes precedence. Otherwise core resumes known apps
-  in the last observed existing folder, falling back to the launch folder or home.
+  On loss, explicit recovery runs directly and takes precedence. Otherwise core
+  starts the configured shell in the last observed existing folder (falling back
+  to the launch folder or home), waits for its first output to settle, then pastes
+  the known app's resume command and presses Enter through the normal input queue.
+  Quitting the agent or a failed resume leaves the shell alive with its output.
   Defaults: `codex resume {session}` (`--no-daemon` on Windows) and
-  `claude --resume {session}`. Override or add argv in config.toml:
-  `resume_commands = { codex = ["codex", "--no-daemon", "resume", "{session}"] }`.
-  An empty argv disables that app's default. Unknown apps get normal shell recovery.
+  `claude --resume {session}`. Override or add shell commands in config.toml:
+  `resume_commands = { codex = "codex --no-daemon resume {session}" }`.
+  An empty command disables that app's default. Unknown apps get normal shell recovery.
   A new empty session may not yet exist on disk; core only knows the reported ID.
   Public `resume_session` changes only after a successful save; existing status/keep
   events carry it. `keep: false` clears the binding. OSC has no acknowledgement;
