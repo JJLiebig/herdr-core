@@ -375,3 +375,71 @@ fn stopped_kept_terminal_returns_at_next_start() {
     assert_eq!(r["state"], "live");
     wait_until("shell after start", || get(&s, &t)["pid"].is_number());
 }
+
+#[test]
+fn unavailable_explicit_recovery_starts_a_shell_and_can_resume_after_restoration() {
+    use std::os::unix::fs::PermissionsExt;
+    for missing in ["folder", "executable"] {
+        let s = Session::new();
+        let config = s.root.join("config/herdr-core/config.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, "shell = ['/bin/sh', '-c', 'echo FALLBACK-SHELL; exec /bin/sh']\n").unwrap();
+        let launch = std::fs::canonicalize(&s.root).unwrap();
+        let t = run(&s, &["--keep", "--cwd", launch.to_str().unwrap(), "sleep", "100"]);
+        wait_until("original folder observed", || get(&s, &t)["foreground"]["cwd"] == launch.display().to_string());
+        let dir = s.root.join("agent's folder & data");
+        std::fs::create_dir(&dir).unwrap();
+        let exe = s.root.join("resume agent");
+        let restore = || {
+            std::fs::write(&exe, "#!/bin/sh\necho AGENT-RESUMED\nexec /bin/sh\n").unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        restore();
+        let state_path = s.root.join("state/herdr-core/test/terminals.json");
+        let state: serde_json::Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        let recovery = serde_json::json!({"argv":[exe], "cwd":dir});
+        let mut conn = s.connect();
+        let reply = conn.call(
+            1,
+            "terminal.keep",
+            serde_json::json!({
+                "terminal":t, "keep":true, "expected_scope":state["terminals"]["1"]["scope"], "recovery":recovery
+            }),
+        );
+        assert_eq!(reply["result"]["keep"], true, "{reply}");
+        let status = s.json(&["server", "status"]);
+        unsafe {
+            libc::kill(status["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+            libc::kill(status["holder"]["pid"].as_i64().unwrap() as i32, libc::SIGKILL);
+        }
+        wait_until("core gone", || !s.connect_ok());
+        if missing == "folder" {
+            std::fs::remove_dir(&dir).unwrap();
+        } else {
+            std::fs::remove_file(&exe).unwrap();
+        }
+        wait_until("fallback shell", || text(&s, &t).contains("FALLBACK-SHELL"));
+        let screen = text(&s, &t);
+        assert!(screen.contains("Resume:"), "{screen}");
+        assert!(screen.contains("resume agent"), "{screen}");
+        assert!(screen.contains(if missing == "folder" { "folder is gone" } else { "could not start" }), "{screen}");
+        assert!(screen.find("Resume:") < screen.find("FALLBACK-SHELL"), "{screen}");
+        assert_eq!(get(&s, &t)["cwd"], launch.display().to_string());
+        s.json(&["send", &t, "echo SHELL-IS-USABLE"]);
+        wait_until("usable fallback", || text(&s, &t).contains("SHELL-IS-USABLE"));
+        let state: serde_json::Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(state["terminals"]["1"]["recovery"], recovery);
+        if missing == "folder" {
+            std::fs::create_dir(&dir).unwrap();
+        } else {
+            restore();
+        }
+        let holder = s.json(&["server", "status"])["holder"]["pid"].as_i64().unwrap();
+        unsafe {
+            libc::kill(holder as i32, libc::SIGKILL);
+        }
+        wait_until("restored recovery resumes", || get(&s, &t)["cwd"] == dir.display().to_string());
+        wait_until("agent resumed", || text(&s, &t).contains("AGENT-RESUMED"));
+        assert!(!text(&s, &t).contains("Resume:"));
+    }
+}

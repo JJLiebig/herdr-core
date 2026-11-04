@@ -34,6 +34,9 @@ impl Core {
             let reason = t.reason.clone().filter(|r| r != "spawn_pending").unwrap_or_else(|| "holder_lost".into());
             self.record_finish(st, id, proto::Exit { code: None, signal: None }, &reason);
         } else {
+            if t.recovery.as_ref().is_some_and(|r| r.argv == t.argv) {
+                t.reason = Some("recovery_spawn_failed".into());
+            }
             t.schedule_restart(now_ms());
         }
         self.save(st);

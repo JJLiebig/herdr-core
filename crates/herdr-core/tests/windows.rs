@@ -1236,3 +1236,72 @@ fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals()
         assert_eq!(err["error"]["kind"], kind, "{err}");
     }
 }
+
+#[test]
+fn unavailable_explicit_recovery_starts_a_shell_and_can_resume_after_restoration() {
+    use std::io::{BufRead, Write};
+    for missing in ["folder", "executable"] {
+        let s = Session::new();
+        let config = s.root.join("config/herdr-core/config.toml");
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, "shell = ['cmd.exe', '/d', '/k', 'echo FALLBACK-SHELL']\n").unwrap();
+        let t = s.bg(&["--keep", "ping", "-n", "120", "127.0.0.1"]);
+        wait_until("original folder observed", || {
+            s.json(&["get", &t])["foreground"]["cwd"] == s.root.display().to_string()
+        });
+        let dir = s.root.join("agent's folder & data");
+        std::fs::create_dir(&dir).unwrap();
+        let exe = s.root.join("resume agent.exe");
+        std::fs::copy(std::env::var("COMSPEC").unwrap(), &exe).unwrap();
+        let state_path = s.root.join("state/herdr-core").join(&s.name).join("terminals.json");
+        let state: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        let recovery = json!({"argv":[exe, "/d", "/k", "echo AGENT-RESUMED"], "cwd":dir});
+        let request = json!({"jsonrpc":"2.0", "id":1, "method":"terminal.keep", "params": {
+            "terminal":t, "keep":true, "expected_scope":state["terminals"]["1"]["scope"], "recovery":recovery
+        }});
+        let mut conn = cmd(&s.name, &s.root)
+            .arg("connect")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = conn.stdin.take().unwrap();
+        writeln!(input, "{request}").unwrap();
+        let mut reply = String::new();
+        std::io::BufReader::new(conn.stdout.take().unwrap()).read_line(&mut reply).unwrap();
+        drop(input);
+        conn.wait().unwrap();
+        assert!(serde_json::from_str::<Value>(&reply).unwrap()["result"]["keep"] == true, "{reply}");
+        let status = s.json(&["server", "status"]);
+        for pid in [status["pid"].as_u64().unwrap(), status["holder"]["pid"].as_u64().unwrap()] {
+            Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output().unwrap();
+        }
+        if missing == "folder" {
+            std::fs::remove_dir(&dir).unwrap();
+        } else {
+            std::fs::remove_file(&exe).unwrap();
+        }
+        s.json(&["server", "start"]);
+        s.shows(&t, "FALLBACK-SHELL");
+        s.shows(&t, "Resume:");
+        let screen = s.read(&t);
+        assert!(screen.contains("AGENT-RESUMED"), "{screen}");
+        assert!(screen.contains(if missing == "folder" { "folder is gone" } else { "could not start" }), "{screen}");
+        assert!(screen.find("Resume:") < screen.find("FALLBACK-SHELL"), "notice precedes shell output: {screen}");
+        assert_eq!(s.json(&["get", &t])["cwd"], s.root.display().to_string());
+        s.typed(&t, "echo shell-is-usable");
+        s.shows(&t, "shell-is-usable");
+        let state: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(state["terminals"]["1"]["recovery"], recovery);
+        if missing == "folder" {
+            std::fs::create_dir(&dir).unwrap();
+        } else {
+            std::fs::copy(std::env::var("COMSPEC").unwrap(), &exe).unwrap();
+        }
+        let holder = s.json(&["server", "status"])["holder"]["pid"].as_u64().unwrap();
+        Command::new("taskkill").args(["/F", "/PID", &holder.to_string()]).output().unwrap();
+        wait_until("restored recovery resumes", || s.json(&["get", &t])["cwd"] == dir.display().to_string());
+        s.shows(&t, "AGENT-RESUMED");
+        assert!(!s.read(&t).contains("Resume:"));
+    }
+}

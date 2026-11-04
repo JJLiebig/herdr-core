@@ -791,7 +791,7 @@ impl Process {
 
 /// `program` as Windows starts it: found on PATH with PATHEXT, batch files
 /// through cmd (npm installs agents as `.cmd` shims).
-fn command_line(argv: &[String], env: &BTreeMap<String, String>) -> io::Result<Vec<u16>> {
+pub(super) fn command_line(argv: &[String], env: &BTreeMap<String, String>) -> io::Result<Vec<u16>> {
     let program = argv.first().ok_or_else(|| io::Error::other("empty argv"))?;
     let path = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone()).unwrap_or_default();
     let exts = env

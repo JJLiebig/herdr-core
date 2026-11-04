@@ -140,7 +140,10 @@ impl Terminal {
         env: &BTreeMap<String, String>,
         shell: &[String],
     ) -> (Vec<String>, String) {
-        if let Some(recovery) = &self.recovery {
+        if let Some(recovery) = &self.recovery
+            && Path::new(&recovery.cwd).is_dir()
+            && self.reason.as_deref() != Some("recovery_spawn_failed")
+        {
             return (recovery.argv.clone(), recovery.cwd.clone());
         }
         let cwd = self
@@ -152,7 +155,18 @@ impl Terminal {
             .unwrap_or_else(|| {
                 env.get("HOME").or_else(|| env.get("USERPROFILE")).cloned().unwrap_or_else(|| "/".into())
             });
-        (shell.to_vec(), cwd)
+        let argv = if let Some(recovery) = &self.recovery {
+            let problem = if Path::new(&recovery.cwd).is_dir() { "could not start" } else { "folder is gone" };
+            let notice = format!(
+                "Recovery {problem}: {}. Resume: {}",
+                recovery.cwd,
+                crate::platform::recovery_command(&recovery.argv)
+            );
+            crate::platform::recovery_shell(shell, &notice, env, &cwd)
+        } else {
+            shell.to_vec()
+        };
+        (argv, cwd)
     }
 }
 
@@ -285,15 +299,38 @@ mod tests {
     }
 
     #[test]
-    fn configured_recovery_never_substitutes_a_missing_cwd() {
+    fn recovery_selects_existing_folders_without_changing_registration() {
+        let root = std::env::temp_dir().join(format!("hc-recovery-cwd-{}", crate::platform::random_hex()));
+        let last = root.join("last");
+        let launch = root.join("launch");
+        std::fs::create_dir_all(&last).unwrap();
+        std::fs::create_dir(&launch).unwrap();
         let mut reg = crate::terminals::Registry::default();
-        let id = reg.create(NewTerminal { argv: vec!["unused".into()], ..Default::default() }, 0).unwrap();
+        let id = reg
+            .create(
+                NewTerminal { argv: vec!["unused".into()], cwd: launch.display().to_string(), ..Default::default() },
+                0,
+            )
+            .unwrap();
         let t = reg.terminals.get_mut(&id).unwrap();
-        t.recovery = Some(Recovery { argv: vec!["helper".into(), "--recover".into()], cwd: "gone-folder".into() });
-        assert_eq!(
-            t.prepare_recovery(&BTreeMap::new(), &["configured-shell".into()]),
-            (vec!["helper".into(), "--recover".into()], "gone-folder".into())
-        );
+        t.last_cwd = Some(last.display().to_string());
+        let recovery =
+            Recovery { argv: vec!["helper".into(), "--recover".into()], cwd: root.join("gone").display().to_string() };
+        t.recovery = Some(recovery.clone());
+        let env = BTreeMap::from([("HOME".into(), root.display().to_string())]);
+        let shell = vec!["configured-shell".into()];
+        for expected in [&last, &launch, &root] {
+            let (argv, cwd) = t.prepare_recovery(&env, &shell);
+            assert_eq!(cwd, expected.display().to_string());
+            assert_ne!(argv, recovery.argv);
+            assert_eq!(t.recovery.as_ref(), Some(&recovery));
+            if expected != &root {
+                std::fs::remove_dir(expected).unwrap();
+            }
+        }
+        std::fs::create_dir(&recovery.cwd).unwrap();
+        assert_eq!(t.prepare_recovery(&env, &shell), (recovery.argv, recovery.cwd));
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn native_session_from_current_live_output_is_durable_independent_of_status() {

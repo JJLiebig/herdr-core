@@ -253,7 +253,12 @@ keeps the last unambiguous process.
   `HC_SCOPE`. Register before starting the managed program; success means the choice
   was saved. Lost/finished or stopping programs and stale scopes are rejected. The
   command runs directly in that fixed cwd after loss, using the same terminal ID;
-  missing commands/folders retry under the existing keep policy. No vendor/session
+  a missing recovery folder or a failed recovery spawn starts the configured/default
+  shell in the first existing last folder, launch folder, or home. A line before
+  the shell shows the unavailable folder and the quoted resume command (PowerShell
+  on Windows, sh on Unix); `hc get` includes it in the shell argv. The saved
+  recovery choice stays intact: a later loss tries it again. Shell launch failures
+  still retry under the existing keep policy. No vendor/session
   selection is done by core. Omit recovery to preserve the choice; `keep: false`
   clears it. Supply `expected_scope` on cleanup too: a stale, lost or stopping program cannot change keep.
   Ordinary exit/kill stay final, and surviving holders are adopted.
