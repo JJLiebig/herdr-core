@@ -104,6 +104,7 @@ This is opt-in: choose keys appropriate for that program. Increasing `paste_gap_
 alone cannot separate events that a paused reader consumes together. Core sends
 the sequence once and reports whether it observed work start; it never retries it.
 Automatic child notices use the parent's `submit` keys and `paste_gap_ms` too.
+On Windows, a reported `app=codex` defaults to `right enter` when no template `submit` is set.
 
 When a terminal is launched on another machine, that machine resolves the template and runs its command.
 Put the template and agent there first.

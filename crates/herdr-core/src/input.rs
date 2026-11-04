@@ -194,7 +194,9 @@ pub enum Step {
 
 /// Validate the full submission before typing, using the program's live key modes.
 pub(crate) fn submit_steps(screen: &ghostty_vt::Terminal, t: &Terminal) -> Result<Vec<Step>, RpcError> {
-    let submit = match &t.submit {
+    // Windows Codex absorbs Enter into a paste burst; Right ends it before submission.
+    let default = (cfg!(windows) && t.status.as_ref().is_some_and(|s| s.app == "codex")).then_some("right enter");
+    let submit = match t.submit.as_deref().or(default) {
         Some(keys) => keys.split(' ').map(|key| crate::keys::encode(screen, key)).collect::<Result<Vec<_>, _>>()?,
         None => vec![b"\r".to_vec()],
     };
