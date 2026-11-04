@@ -83,18 +83,6 @@ full-screen app, then restore its view. While its status is `working`,
 `blocked` or `error`, history reads return only the screen immediately,
 marked incomplete with `why` set to that status; no scroll input is sent.
 
-A send stays pending while the person has an unsent draft in that terminal.
-Enter, Ctrl+C or Ctrl+U releases it; Escape and backspace do not reliably
-mean clear, so they do not. Only human viewer input counts, not automatic
-terminal replies. This tracks keys, not the program's composer state.
-After three minutes the draft hold expires; the normal ~3 s quiet gate
-still applies. Messages are not dropped on clear or expiry.
-`hc get <t>` shows `waiting_for_person: true` during the hold; the eventual
-send reply includes `waited_for_person: true`. Do not resend while it waits.
-With `--wait`, `--timeout` still applies to watching the turn **after**
-delivery, not to this bounded draft hold. Core notes respect drafts too;
-`keys` and `interrupt` keep their existing behavior.
-
 Keep doing useful work while children work. When you need their results:
 
 ```sh
@@ -292,6 +280,26 @@ keeps the last unambiguous process.
 - Planned restarts and updates preserve the core's launch environment for new
   terminals; per-terminal API `env` overrides still apply. A stop followed by a
   fresh start uses the new launcher's environment.
+- On macOS, privacy requests from terminal programs belong to Herdr Core,
+  not Herdr.app. Existing Herdr.app grants do not transfer to the core.
+- macOS installs keep the newest bundle at the fixed physical path
+  `~/.local/share/herdr-core/active/Herdr Core.app`, selected by a `current`
+  symlink, with `hc` and `herdr-core` links in
+  `~/.local/bin` (`HC_INSTALL_DIR` overrides the links'
+  folder). Updates keep running terminals. A bundled install's `update --from`
+  needs a complete signed `.app` (or its `Contents/MacOS/herdr-core`), not a bare
+  executable. Terminals created before this bundle
+  upgrade may still have broken macOS privacy access: recreate those terminals;
+  restarting only the core cannot repair their old holders. After an old updater
+  copies only the binary, run `hc update` to finish installing the bundle, even
+  if the version is already current. The app completes this during its update.
+  Startup never downloads updates. Previous bundles stay on disk while their
+  cores or holders run; later installs reclaim unused previous bundles.
+  Per-user installs use the bundle. Root/system destinations keep the independently
+  signed standalone executable and their existing macOS privacy behavior.
+  Machine installs also preserve bundles. A standalone sender cannot replace a
+  bundled remote core: run `hc update` there instead. Root remotes receive the
+  standalone release.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
   app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
   falls back to a direct child and logs the reason in `core.log`; that core may
