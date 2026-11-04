@@ -55,8 +55,10 @@ impl Core {
             eprintln!("core: kept terminals waiting for a holder: {e}");
             return;
         }
-        let shell = match crate::config::load(&self.paths.config).and_then(|settings| settings.shell()) {
-            Ok(shell) => shell,
+        let (shell, commands) = match crate::config::load(&self.paths.config)
+            .and_then(|settings| Ok((settings.shell()?, settings.resume_commands)))
+        {
+            Ok(value) => value,
             Err(e) => {
                 eprintln!("core: kept terminals waiting for a shell: {}", e.message);
                 return;
@@ -82,12 +84,13 @@ impl Core {
             let Some(holder) = st.current() else { break };
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
-            let previous = t.recovery.as_ref().map(|_| t.clone());
+            let previous = (t.recovery.is_some() || t.resume_app.is_some()).then(|| t.clone());
             t.title.clear();
             let mut env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
+            let resume = t.osc_resume_command(&commands);
             let (argv, cwd) = t.prepare_recovery(&mut env, &shell);
             let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
-            t.scope = Some(scope);
+            t.scope = Some(scope.clone());
             t.holder = Some(instance);
             t.argv = argv;
             t.cwd = cwd.clone();
@@ -115,8 +118,15 @@ impl Core {
             let mut screen = ghostty_vt::Terminal::new(t.cols, t.rows, self.history_bytes());
             screen.set_xtversion(&t.identity);
             st.screens.insert(id, screen);
+            st.last_output.remove(&id);
             if let Some(link) = st.link(id) {
                 link.send(&proto::json_frame(proto::SPAWN, id, &spawn));
+                if let Some(command) = resume {
+                    let core = self.clone();
+                    tokio::spawn(async move {
+                        core.resume_in_shell(id, scope, command).await;
+                    });
+                }
             }
         }
     }

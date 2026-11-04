@@ -255,3 +255,32 @@ fn unavailable_explicit_recovery_starts_a_shell_and_can_resume_after_restoration
         assert!(!s.read(&t).contains("Resume:"));
     }
 }
+
+#[test]
+fn osc_resume_runs_inside_the_recovered_shell_and_a_failed_command_leaves_it_usable() {
+    let s = Session::new();
+    let config = s.root.join("config/herdr-core/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        r#"shell = ['cmd.exe', '/d']
+resume_commands = { probe = 'cmd /d /c "echo {session}>resume-result.txt & exit 7"' }
+"#,
+    )
+    .unwrap();
+    let script = s.file("agent.ps1", "$e=[char]27; Write-Host -NoNewline \"$e]7501;state=idle:app=probe:session=01234567-89ab-cdef-0123-456789abcdef$e\\\"; Start-Sleep 120");
+    let t = s.bg(&["--keep", "--cwd", s.root.to_str().unwrap(), "powershell", "-NoProfile", "-File", &script]);
+    wait_until("OSC binding saved", || {
+        s.json(&["get", &t])["resume_session"] == "01234567-89ab-cdef-0123-456789abcdef"
+    });
+    let holder = s.json(&["server", "status"])["holder"]["pid"].as_u64().unwrap();
+    Command::new("taskkill").args(["/F", "/PID", &holder.to_string()]).output().unwrap();
+    let result = s.root.join("resume-result.txt");
+    wait_until("resume command executed", || result.is_file());
+    assert_eq!(std::fs::read_to_string(result).unwrap().trim(), "01234567-89ab-cdef-0123-456789abcdef");
+    let terminal = s.json(&["get", &t]);
+    assert_eq!(terminal["state"], "live");
+    assert_eq!(terminal["argv"][0], "cmd.exe");
+    s.json(&["send", &t, "echo usable>shell-result.txt"]);
+    wait_until("shell accepts input after failed resume", || s.root.join("shell-result.txt").is_file());
+}

@@ -111,6 +111,24 @@ pub(super) unsafe fn resume_with_notice(
     }
 }
 
+/// Defaults are typed into the recovered shell; only a validated UUID is substituted.
+pub(crate) fn resume_command(app: &str) -> Option<&'static str> {
+    match app {
+        "codex" => {
+            #[cfg(windows)]
+            {
+                Some("codex --no-daemon resume {session}")
+            }
+            #[cfg(unix)]
+            {
+                Some("codex resume {session}")
+            }
+        }
+        "claude" => Some("claude --resume {session}"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]

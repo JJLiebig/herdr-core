@@ -3,7 +3,7 @@
 //! Everything above it is shared.
 
 mod herdr_local;
-pub(crate) use herdr_local::{recovery_command, recovery_shell};
+pub(crate) use herdr_local::{recovery_command, recovery_shell, resume_command};
 
 #[cfg(unix)]
 mod unix;

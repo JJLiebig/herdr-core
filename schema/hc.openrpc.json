@@ -820,7 +820,7 @@
             "type": "boolean"
           },
           "resume_session": {
-            "description": "Last successfully saved opaque session reported by the registered kept recovery program.",
+            "description": "Last successfully saved UUID session reported by the kept program.",
             "type": [
               "string",
               "null"
@@ -1304,7 +1304,7 @@
             "type": "boolean"
           },
           "resume_session": {
-            "description": "Last successfully saved opaque session reported by the registered kept recovery program.",
+            "description": "Last successfully saved UUID session reported by the kept program.",
             "type": [
               "string",
               "null"
