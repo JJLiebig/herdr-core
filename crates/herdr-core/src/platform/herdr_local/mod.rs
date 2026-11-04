@@ -111,6 +111,25 @@ pub(super) unsafe fn resume_with_notice(
     }
 }
 
+/// Built-in commands remain argv, so session data never becomes shell source.
+pub(crate) fn resume_command(app: &str) -> Option<Vec<String>> {
+    let args = match app {
+        "codex" => {
+            #[cfg(windows)]
+            {
+                vec!["codex", "--no-daemon", "resume", "{session}"]
+            }
+            #[cfg(unix)]
+            {
+                vec!["codex", "resume", "{session}"]
+            }
+        }
+        "claude" => vec!["claude", "--resume", "{session}"],
+        _ => return None,
+    };
+    Some(args.into_iter().map(str::to_owned).collect())
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]

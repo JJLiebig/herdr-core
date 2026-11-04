@@ -23,7 +23,9 @@ pub struct Terminal {
     pub keep: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) recovery: Option<crate::herdr_local::recovery::Recovery>,
-    /// Last successfully saved opaque session reported by the registered kept recovery program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) resume_app: Option<String>,
+    /// Last successfully saved UUID session reported by the kept program.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,6 +274,7 @@ impl Registry {
                 keep: new.keep,
                 recovery: None,
                 resume_session: None,
+                resume_app: None,
                 last_cwd: None,
                 restart_env: BTreeMap::new(),
                 restart_after_ms: 0,
@@ -430,6 +433,7 @@ const PRIVATE: &[&str] = &[
     "last_cwd",
     "restart_env",
     "recovery",
+    "resume_app",
     "restart_after_ms",
     "restart_delay_ms",
     "program_started_ms",

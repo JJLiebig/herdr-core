@@ -55,8 +55,10 @@ impl Core {
             eprintln!("core: kept terminals waiting for a holder: {e}");
             return;
         }
-        let shell = match crate::config::load(&self.paths.config).and_then(|settings| settings.shell()) {
-            Ok(shell) => shell,
+        let (shell, commands) = match crate::config::load(&self.paths.config)
+            .and_then(|settings| Ok((settings.shell()?, settings.resume_commands)))
+        {
+            Ok(value) => value,
             Err(e) => {
                 eprintln!("core: kept terminals waiting for a shell: {}", e.message);
                 return;
@@ -82,10 +84,10 @@ impl Core {
             let Some(holder) = st.current() else { break };
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
-            let previous = t.recovery.as_ref().map(|_| t.clone());
+            let previous = (t.recovery.is_some() || t.resume_app.is_some()).then(|| t.clone());
             t.title.clear();
             let mut env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
-            let (argv, cwd) = t.prepare_recovery(&mut env, &shell);
+            let (argv, cwd) = t.prepare_recovery(&mut env, &shell, &commands);
             let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
             t.scope = Some(scope);
             t.holder = Some(instance);
