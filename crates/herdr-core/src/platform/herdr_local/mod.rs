@@ -64,6 +64,53 @@ pub(super) fn notice_command(notice: &str) -> Vec<String> {
     ]
 }
 
+#[cfg(windows)]
+pub(super) unsafe fn resume_with_notice(
+    printer: Option<Vec<u16>>,
+    flags: u32,
+    env: *mut std::ffi::c_void,
+    cwd: *const u16,
+    startup: &windows_sys::Win32::System::Threading::STARTUPINFOW,
+    job: windows_sys::Win32::Foundation::HANDLE,
+    thread: std::os::windows::io::OwnedHandle,
+) -> std::io::Result<()> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+    use windows_sys::Win32::System::Threading::{CreateProcessW, INFINITE, ResumeThread, WaitForSingleObject};
+    unsafe {
+        let Some(mut cmd) = printer else {
+            ResumeThread(thread.as_raw_handle().cast());
+            return Ok(());
+        };
+        let mut process = std::mem::zeroed();
+        if CreateProcessW(
+            std::ptr::null(),
+            cmd.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            flags,
+            env,
+            cwd,
+            startup,
+            &mut process,
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let printer_handle = OwnedHandle::from_raw_handle(process.hProcess as RawHandle);
+        let printer_thread = OwnedHandle::from_raw_handle(process.hThread as RawHandle);
+        AssignProcessToJobObject(job, printer_handle.as_raw_handle().cast());
+        ResumeThread(printer_thread.as_raw_handle().cast());
+        // Read the PTY before waiting so a long notice cannot block the printer.
+        std::thread::spawn(move || {
+            WaitForSingleObject(printer_handle.as_raw_handle().cast(), INFINITE);
+            ResumeThread(thread.as_raw_handle().cast());
+        });
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]

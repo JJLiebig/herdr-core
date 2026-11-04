@@ -923,7 +923,7 @@ pub fn spawn_pty(
     let mut cmd = command_line(argv, env)?;
     let mut env = env.clone();
     let notice = env.remove(super::herdr_local::NOTICE_ENV);
-    let mut printer_cmd =
+    let printer_cmd =
         notice.as_deref().map(|s| command_line(&super::herdr_local::notice_command(s), &env)).transpose()?;
     let mut block = env_block(&env);
     let cwd = wide(cwd.as_ref());
@@ -1007,44 +1007,25 @@ pub fn spawn_pty(
             &si.StartupInfo,
             &mut pi,
         );
-        let mut printer: PROCESS_INFORMATION = zeroed();
-        let printed = if started != 0 {
-            printer_cmd.as_mut().map(|cmd| {
-                check(CreateProcessW(
-                    null(),
-                    cmd.as_mut_ptr(),
-                    null(),
-                    null(),
-                    0,
-                    flags,
-                    block.as_mut_ptr().cast(),
-                    cwd.as_ptr(),
-                    &si.StartupInfo,
-                    &mut printer,
-                ))
-            })
-        } else {
-            None
-        };
-        DeleteProcThreadAttributeList(list);
-        check(started)?;
+        if started == 0 {
+            let error = io::Error::last_os_error();
+            DeleteProcThreadAttributeList(list);
+            return Err(error);
+        }
         let handle = OwnedHandle::from_raw_handle(pi.hProcess as RawHandle);
         let thread = OwnedHandle::from_raw_handle(pi.hThread as RawHandle);
         AssignProcessToJobObject(job.as_raw_handle() as HANDLE, handle.as_raw_handle() as HANDLE);
-        if let Some(printed) = printed {
-            printed?;
-            let printer_handle = OwnedHandle::from_raw_handle(printer.hProcess as RawHandle);
-            let printer_thread = OwnedHandle::from_raw_handle(printer.hThread as RawHandle);
-            AssignProcessToJobObject(job.as_raw_handle() as HANDLE, printer_handle.as_raw_handle() as HANDLE);
-            ResumeThread(printer_thread.as_raw_handle() as HANDLE);
-            // Start reading the PTY before waiting: even a long notice must not fill its output pipe.
-            std::thread::spawn(move || {
-                WaitForSingleObject(printer_handle.as_raw_handle() as HANDLE, INFINITE);
-                ResumeThread(thread.as_raw_handle() as HANDLE);
-            });
-        } else {
-            ResumeThread(thread.as_raw_handle() as HANDLE);
-        }
+        let resumed = super::herdr_local::resume_with_notice(
+            printer_cmd,
+            flags,
+            block.as_mut_ptr().cast(),
+            cwd.as_ptr(),
+            &si.StartupInfo,
+            job.as_raw_handle() as HANDLE,
+            thread,
+        );
+        DeleteProcThreadAttributeList(list);
+        resumed?;
         // The console holds its own ends now.
         drop((in_r, out_w));
         let process = Process { pid: pi.dwProcessId, handle, console: console.clone() };
