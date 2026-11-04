@@ -391,6 +391,7 @@ fn unavailable_explicit_recovery_starts_a_shell_and_can_resume_after_restoration
             std::fs::write(&config, format!("shell = {}\n", serde_json::json!([fallback]))).unwrap();
         }
         let launch = std::fs::canonicalize(&s.root).unwrap();
+        s.json(&["server", "start"]);
         let mut conn = s.connect();
         let started = conn.call(
             0,
