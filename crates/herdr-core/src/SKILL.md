@@ -256,9 +256,11 @@ keeps the last unambiguous process.
   a missing recovery folder or a failed recovery spawn starts the configured/default
   shell in the first existing last folder, launch folder, or home. A line before
   the shell shows the unavailable folder and the quoted resume command (PowerShell
-  on Windows, sh on Unix); `hc get` includes it in the shell argv. The saved
+  on Windows, sh on Unix); the initial title in `hc get` carries it too. The saved
   recovery choice stays intact: a later loss tries it again. Shell launch failures
-  still retry under the existing keep policy. No vendor/session
+  still retry under the existing keep policy. On Unix a notice wrapper that cannot
+  exec the shell ends by signal, so keep retries it; successful exec preserves
+  ordinary shell exits. No vendor/session
   selection is done by core. Omit recovery to preserve the choice; `keep: false`
   clears it. Supply `expected_scope` on cleanup too: a stale, lost or stopping program cannot change keep.
   Ordinary exit/kill stay final, and surviving holders are adopted.

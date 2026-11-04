@@ -83,8 +83,9 @@ impl Core {
             let instance = holder.instance.clone();
             let t = st.reg.terminals.get_mut(&id).expect("pending");
             let previous = t.recovery.as_ref().map(|_| t.clone());
-            let env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
-            let (argv, cwd) = t.prepare_recovery(&env, &shell);
+            t.title.clear();
+            let mut env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
+            let (argv, cwd) = t.prepare_recovery(&mut env, &shell);
             let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
             t.scope = Some(scope);
             t.holder = Some(instance);
@@ -92,7 +93,6 @@ impl Core {
             t.cwd = cwd.clone();
             t.template = None;
             t.reported = false;
-            t.title.clear();
             t.full_screen = false;
             t.win32_input = false;
             t.printed = 0;

@@ -1240,11 +1240,15 @@ fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals()
 #[test]
 fn unavailable_explicit_recovery_starts_a_shell_and_can_resume_after_restoration() {
     use std::io::{BufRead, Write};
-    for missing in ["folder", "executable"] {
+    for missing in ["folder", "executable", "shell_executable"] {
         let s = Session::new();
         let config = s.root.join("config/herdr-core/config.toml");
         std::fs::create_dir_all(config.parent().unwrap()).unwrap();
         std::fs::write(&config, "shell = ['cmd.exe', '/d', '/k', 'echo FALLBACK-SHELL']\n").unwrap();
+        if missing == "shell_executable" {
+            let broken = s.file("invalid shell.exe", "not an executable");
+            std::fs::write(&config, format!("shell = {}\n", json!([broken]))).unwrap();
+        }
         let t = s.bg(&["--keep", "ping", "-n", "120", "127.0.0.1"]);
         wait_until("original folder observed", || {
             s.json(&["get", &t])["foreground"]["cwd"] == s.root.display().to_string()
@@ -1255,7 +1259,12 @@ fn unavailable_explicit_recovery_starts_a_shell_and_can_resume_after_restoration
         std::fs::copy(std::env::var("COMSPEC").unwrap(), &exe).unwrap();
         let state_path = s.root.join("state/herdr-core").join(&s.name).join("terminals.json");
         let state: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
-        let recovery = json!({"argv":[exe, "/d", "/k", "echo AGENT-RESUMED"], "cwd":dir});
+        let command = if missing == "folder" {
+            format!("echo AGENT-RESUMED {}", "x".repeat(6144))
+        } else {
+            "echo AGENT-RESUMED".into()
+        };
+        let recovery = json!({"argv":[exe, "/d", "/k", command], "cwd":dir});
         let request = json!({"jsonrpc":"2.0", "id":1, "method":"terminal.keep", "params": {
             "terminal":t, "keep":true, "expected_scope":state["terminals"]["1"]["scope"], "recovery":recovery
         }});
@@ -1276,24 +1285,36 @@ fn unavailable_explicit_recovery_starts_a_shell_and_can_resume_after_restoration
         for pid in [status["pid"].as_u64().unwrap(), status["holder"]["pid"].as_u64().unwrap()] {
             Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output().unwrap();
         }
-        if missing == "folder" {
+        if missing != "executable" {
             std::fs::remove_dir(&dir).unwrap();
         } else {
             std::fs::remove_file(&exe).unwrap();
         }
         s.json(&["server", "start"]);
+        if missing == "shell_executable" {
+            wait_until("failed shell exec remains live and retries", || {
+                let state: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+                s.json(&["get", &t])["state"] == "live"
+                    && state["terminals"]["1"]["restart_delay_ms"].as_u64().is_some_and(|n| n >= 3000)
+            });
+            assert!(s.json(&["get", &t])["finished_ms"].is_null());
+            std::fs::write(&config, "shell = ['cmd.exe', '/d', '/k', 'echo FALLBACK-SHELL']\n").unwrap();
+        }
         s.shows(&t, "FALLBACK-SHELL");
         s.shows(&t, "Resume:");
         let screen = s.read(&t);
         assert!(screen.contains("AGENT-RESUMED"), "{screen}");
-        assert!(screen.contains(if missing == "folder" { "folder is gone" } else { "could not start" }), "{screen}");
+        assert!(
+            screen.contains(if missing != "executable" { "folder is gone" } else { "could not start" }),
+            "{screen}"
+        );
         assert!(screen.find("Resume:") < screen.find("FALLBACK-SHELL"), "notice precedes shell output: {screen}");
         assert_eq!(s.json(&["get", &t])["cwd"], s.root.display().to_string());
         s.typed(&t, "echo shell-is-usable");
         s.shows(&t, "shell-is-usable");
         let state: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
         assert_eq!(state["terminals"]["1"]["recovery"], recovery);
-        if missing == "folder" {
+        if missing != "executable" {
             std::fs::create_dir(&dir).unwrap();
         } else {
             std::fs::copy(std::env::var("COMSPEC").unwrap(), &exe).unwrap();

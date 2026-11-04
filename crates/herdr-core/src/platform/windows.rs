@@ -791,7 +791,7 @@ impl Process {
 
 /// `program` as Windows starts it: found on PATH with PATHEXT, batch files
 /// through cmd (npm installs agents as `.cmd` shims).
-pub(super) fn command_line(argv: &[String], env: &BTreeMap<String, String>) -> io::Result<Vec<u16>> {
+fn command_line(argv: &[String], env: &BTreeMap<String, String>) -> io::Result<Vec<u16>> {
     let program = argv.first().ok_or_else(|| io::Error::other("empty argv"))?;
     let path = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone()).unwrap_or_default();
     let exts = env
@@ -921,7 +921,11 @@ pub fn spawn_pty(
     rows: u16,
 ) -> io::Result<(Pty, Process)> {
     let mut cmd = command_line(argv, env)?;
-    let mut block = env_block(env);
+    let mut env = env.clone();
+    let notice = env.remove(super::herdr_local::NOTICE_ENV);
+    let mut printer_cmd =
+        notice.as_deref().map(|s| command_line(&super::herdr_local::notice_command(s), &env)).transpose()?;
+    let mut block = env_block(&env);
     let cwd = wide(cwd.as_ref());
     unsafe {
         // Ctrl+C ignored is inherited (an ssh session sets it): the program
@@ -1003,12 +1007,44 @@ pub fn spawn_pty(
             &si.StartupInfo,
             &mut pi,
         );
+        let mut printer: PROCESS_INFORMATION = zeroed();
+        let printed = if started != 0 {
+            printer_cmd.as_mut().map(|cmd| {
+                check(CreateProcessW(
+                    null(),
+                    cmd.as_mut_ptr(),
+                    null(),
+                    null(),
+                    0,
+                    flags,
+                    block.as_mut_ptr().cast(),
+                    cwd.as_ptr(),
+                    &si.StartupInfo,
+                    &mut printer,
+                ))
+            })
+        } else {
+            None
+        };
         DeleteProcThreadAttributeList(list);
         check(started)?;
         let handle = OwnedHandle::from_raw_handle(pi.hProcess as RawHandle);
         let thread = OwnedHandle::from_raw_handle(pi.hThread as RawHandle);
         AssignProcessToJobObject(job.as_raw_handle() as HANDLE, handle.as_raw_handle() as HANDLE);
-        ResumeThread(thread.as_raw_handle() as HANDLE);
+        if let Some(printed) = printed {
+            printed?;
+            let printer_handle = OwnedHandle::from_raw_handle(printer.hProcess as RawHandle);
+            let printer_thread = OwnedHandle::from_raw_handle(printer.hThread as RawHandle);
+            AssignProcessToJobObject(job.as_raw_handle() as HANDLE, printer_handle.as_raw_handle() as HANDLE);
+            ResumeThread(printer_thread.as_raw_handle() as HANDLE);
+            // Start reading the PTY before waiting: even a long notice must not fill its output pipe.
+            std::thread::spawn(move || {
+                WaitForSingleObject(printer_handle.as_raw_handle() as HANDLE, INFINITE);
+                ResumeThread(thread.as_raw_handle() as HANDLE);
+            });
+        } else {
+            ResumeThread(thread.as_raw_handle() as HANDLE);
+        }
         // The console holds its own ends now.
         drop((in_r, out_w));
         let process = Process { pid: pi.dwProcessId, handle, console: console.clone() };

@@ -137,7 +137,7 @@ impl Core {
 impl Terminal {
     pub(crate) fn prepare_recovery(
         &mut self,
-        env: &BTreeMap<String, String>,
+        env: &mut BTreeMap<String, String>,
         shell: &[String],
     ) -> (Vec<String>, String) {
         if let Some(recovery) = &self.recovery
@@ -162,7 +162,8 @@ impl Terminal {
                 recovery.cwd,
                 crate::platform::recovery_command(&recovery.argv)
             );
-            crate::platform::recovery_shell(shell, &notice, env, &cwd)
+            self.title = notice.clone();
+            crate::platform::recovery_shell(shell, &notice, env)
         } else {
             shell.to_vec()
         };
@@ -317,10 +318,10 @@ mod tests {
         let recovery =
             Recovery { argv: vec!["helper".into(), "--recover".into()], cwd: root.join("gone").display().to_string() };
         t.recovery = Some(recovery.clone());
-        let env = BTreeMap::from([("HOME".into(), root.display().to_string())]);
+        let mut env = BTreeMap::from([("HOME".into(), root.display().to_string())]);
         let shell = vec!["configured-shell".into()];
         for expected in [&last, &launch, &root] {
-            let (argv, cwd) = t.prepare_recovery(&env, &shell);
+            let (argv, cwd) = t.prepare_recovery(&mut env, &shell);
             assert_eq!(cwd, expected.display().to_string());
             assert_ne!(argv, recovery.argv);
             assert_eq!(t.recovery.as_ref(), Some(&recovery));
@@ -329,7 +330,7 @@ mod tests {
             }
         }
         std::fs::create_dir(&recovery.cwd).unwrap();
-        assert_eq!(t.prepare_recovery(&env, &shell), (recovery.argv, recovery.cwd));
+        assert_eq!(t.prepare_recovery(&mut env, &shell), (recovery.argv, recovery.cwd));
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -460,9 +461,11 @@ mod tests {
                 assert_eq!(st.reg.terminals[&id].resume_session.as_deref(), Some("changed"));
             }
             let t = st.reg.terminals.get_mut(&id).unwrap();
-            t.prepare_recovery(&BTreeMap::new(), &["configured-shell".into()]);
+            t.prepare_recovery(&mut BTreeMap::new(), &["configured-shell".into()]);
             assert_eq!(t.resume_session.as_deref(), Some("changed"));
             t.holder = Some("holder".into());
+            // Drain deferred status saves before occupying the writer's temporary path.
+            core.save_durable(serde_json::to_vec(&st.reg).unwrap()).unwrap();
         }
         while events.try_recv().is_ok() {}
         std::fs::create_dir(core.paths.state.join("terminals.tmp")).unwrap();
