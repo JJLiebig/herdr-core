@@ -510,6 +510,15 @@ mod tests {
                     vec!["agent", "--resume=01234567-89ab-cdef-0123-456789abcdef"]
                 );
                 assert_eq!(t.prepare_recovery(&mut BTreeMap::new(), &shell, &BTreeMap::new()).0, shell);
+                t.reason = Some("holder_lost".into());
+                core.spawn_failed(&mut st, id);
+                let t = st.reg.terminals.get_mut(&id).unwrap();
+                assert_eq!(t.prepare_recovery(&mut BTreeMap::new(), &shell, &commands).0, shell);
+                assert!(t.resume_session.is_some(), "failed launch preserves the binding for a later loss");
+                t.reason = Some("holder_lost".into());
+                assert_eq!(t.prepare_recovery(&mut BTreeMap::new(), &shell, &commands).0[0], "agent");
+                t.holder = Some("holder".into());
+                t.pid = Some(1);
                 core.output(&mut st, id, "holder", format!("\x1b]7501;{clear}\x07").as_bytes());
                 assert!(disk_session().is_none());
                 let t = st.reg.terminals.get_mut(&id).unwrap();
