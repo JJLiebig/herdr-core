@@ -96,6 +96,9 @@ pub struct Terminal {
     /// Notable events so far: turns that ended, blocks, the exit.
     #[serde(default)]
     pub news: u64,
+    /// Latest failure news (word, or no word for program loss) and its signal.
+    #[serde(default)]
+    pub failure_news: Option<(u64, Option<String>, Option<i32>)>,
     /// How many of those its parent has seen (read, get, wait, send, keys, kill).
     #[serde(default)]
     pub seen: u64,
@@ -300,6 +303,7 @@ impl Registry {
                 die_with_parent: new.die_with_parent,
                 rm: new.rm,
                 news: 0,
+                failure_news: None,
                 seen: 0,
                 noted: 0,
                 told_parent: false,
@@ -416,6 +420,7 @@ impl Registry {
 const PRIVATE: &[&str] = &[
     "first_task_turn",
     "news",
+    "failure_news",
     "seen",
     "noted",
     "seen_ms",
