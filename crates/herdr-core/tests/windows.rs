@@ -446,6 +446,7 @@ fn update_swaps_the_whole_release_while_its_terminals_run() {
 fn an_update_that_cannot_finish_puts_everything_back() {
     let s = Session::new();
     let exe = installed(&s);
+    assert!(hc_at(&s, &exe, &["server", "start"]).status.success());
     let new = release(&s.root.join("new"), "new-build");
     // Something holds the last file without letting it move (a scanner).
     let held = std::os::windows::fs::OpenOptionsExt::share_mode(std::fs::OpenOptions::new().read(true), 0)
@@ -680,6 +681,21 @@ fn implicit_local_and_ssh_start_apply_the_same_desktop_policy() {
             assert!(error["error"]["message"].as_str().unwrap().contains("desktop session"), "{error}");
             assert!(error["error"]["hint"].as_str().unwrap().contains("open Herdr on that Windows machine"), "{error}");
             assert_ne!(s.out(&["server", "status"]).0, 0, "refused startup left a core");
+        }
+        if !out.status.success() {
+            let exe = installed(&s);
+            let new = release(&s.root.join("new"), "new-build");
+            let mut update = cmd_at(&exe, &s.name, &s.root);
+            if ssh {
+                update.env("SSH_CLIENT", "10.0.0.1 50000 22");
+            }
+            let refused = update.args(["update", "--from", new.to_str().unwrap()]).output().unwrap();
+            assert!(!refused.status.success());
+            let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
+            assert!(error["error"]["message"].as_str().unwrap().contains("desktop session"), "{error}");
+            assert!(marked(&exe, "old-build"), "refused update replaced the installed core");
+            assert!(!marked(&exe, "new-build"));
+            assert_ne!(s.out(&["server", "status"]).0, 0, "refused update left a core");
         }
         if out.status.success() {
             assert_eq!(s.out(&["server", "stop"]).0, 0);

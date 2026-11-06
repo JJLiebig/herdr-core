@@ -133,7 +133,6 @@ fn explicit_recovery_uses_one_same_id_command_and_adopts_surviving_holders() {
 #[test]
 fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals() {
     let s = Session::new();
-    s.json(&["server", "start"]);
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     let exe = s.root.join("shell with spaces.exe");
@@ -152,6 +151,7 @@ fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals()
     let old = s.json(&["get", &t])["pid"].as_u64().unwrap();
     set_shell("configured-recovery");
     s.json(&["server", "stop"]);
+    s.json(&["server", "start"]);
     wait_until("configured shell restored", || s.json(&["get", &t])["pid"].as_u64().is_some_and(|p| p != old));
     s.shows(&t, "configured-recovery");
     let pid = s.json(&["get", &t])["pid"].as_u64().unwrap();
