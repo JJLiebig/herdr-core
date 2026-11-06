@@ -28,6 +28,9 @@ The upstream instructions follow unchanged.
 - User-approved private fork work does not wait for upstream approval. Changes
   proposed to Can still follow his contribution and shared-API rules. Do not
   open upstream issues or PRs unless requested.
+- Before closing, rebuilding into or wiping an isolated Herdr test copy, run
+  `hc ls` on its session and leave it alone while the user has live terminals
+  in it.
 - Do not add fork branding, release pipelines, dependency churn or compatibility
   layers without a concrete need. Reuse existing holders and recovery rules.
 - `origin` is the public fork. `private-archive` preserves the old private copy.
