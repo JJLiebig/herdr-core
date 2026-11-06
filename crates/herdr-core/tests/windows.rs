@@ -868,6 +868,29 @@ fn interrupt_is_ctrl_c_the_program_takes() {
 }
 
 #[test]
+fn restart_and_a_core_crash_keep_terminals_and_stop_leaves_nothing() {
+    let s = Session::new();
+    let t = s.bg(&["ping", "-n", "120", "127.0.0.1"]);
+    let program = s.json(&["get", &t])["pid"].as_u64().unwrap();
+    let status = s.json(&["server", "status"]);
+    let holder = status["holder"]["pid"].as_u64().unwrap();
+
+    s.json(&["server", "restart"]);
+    assert_eq!(s.json(&["get", &t])["state"], "live");
+
+    let core = s.json(&["server", "status"])["pid"].as_u64().unwrap();
+    Command::new("taskkill").args(["/F", "/PID", &core.to_string()]).output().unwrap();
+    wait_until("core back", || !alive(core) && s.out(&["server", "status"]).0 == 0);
+    let after = s.json(&["server", "status"]);
+    assert_eq!(after["holder"]["pid"].as_u64(), Some(holder), "same holder: {after}");
+    assert_eq!(s.json(&["get", &t])["state"], "live");
+
+    let core = after["pid"].as_u64().unwrap();
+    s.json(&["server", "stop"]);
+    wait_until("nothing left", || ![program, holder, core].into_iter().any(alive));
+}
+
+#[test]
 fn planned_restarts_preserve_the_environment_for_new_terminals() {
     let s = Session::new();
     let exe = installed(&s);
