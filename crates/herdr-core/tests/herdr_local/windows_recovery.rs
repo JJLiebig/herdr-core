@@ -100,6 +100,7 @@ fn explicit_recovery_uses_one_same_id_command_and_adopts_surviving_holders() {
     for pid in [status["pid"].as_u64().unwrap(), status["holder"]["pid"].as_u64().unwrap()] {
         Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output().unwrap();
     }
+    s.json(&["server", "start"]);
     wait_until("recorded command recovers after core and holder loss", || {
         let r = s.json(&["get", &t]);
         r["state"] == "live" && r["pid"].as_u64().is_some_and(|p| p != old) && marker.exists()
