@@ -26,6 +26,7 @@ fn restart_and_a_core_crash_keep_terminals_and_stop_leaves_nothing() {
 #[test]
 fn the_folder_a_shell_moves_to_is_seen_and_a_lost_kept_shell_returns_there() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let dir = s.root.join("moved here");
     std::fs::create_dir(&dir).unwrap();
     let dir = dir.display().to_string();
@@ -132,6 +133,7 @@ fn explicit_recovery_uses_one_same_id_command_and_adopts_surviving_holders() {
 #[test]
 fn configured_shell_uses_argv_and_is_read_live_for_new_and_recovered_terminals() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     let exe = s.root.join("shell with spaces.exe");
