@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn restart_and_a_core_crash_keep_terminals_and_stop_leaves_nothing() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let t = s.bg(&["ping", "-n", "120", "127.0.0.1"]);
     let program = s.json(&["get", &t])["pid"].as_u64().unwrap();
     let status = s.json(&["server", "status"]);
@@ -58,6 +59,7 @@ fn the_folder_a_shell_moves_to_is_seen_and_a_lost_kept_shell_returns_there() {
 fn explicit_recovery_uses_one_same_id_command_and_adopts_surviving_holders() {
     use std::io::{BufRead, Write};
     let s = Session::new();
+    s.json(&["server", "start"]);
     let t = s.bg(&["--keep", "ping", "-n", "120", "127.0.0.1"]);
     let dir = s.root.join("fixed recovery cwd");
     std::fs::create_dir(&dir).unwrap();
@@ -173,6 +175,7 @@ fn unavailable_explicit_recovery_starts_a_shell_and_can_resume_after_restoration
     use std::io::{BufRead, Write};
     for missing in ["folder", "executable", "shell_executable"] {
         let s = Session::new();
+        s.json(&["server", "start"]);
         let config = s.root.join("config/herdr-core/config.toml");
         std::fs::create_dir_all(config.parent().unwrap()).unwrap();
         std::fs::write(&config, "shell = ['cmd.exe', '/d', '/k', 'echo FALLBACK-SHELL']\n").unwrap();
@@ -261,6 +264,7 @@ fn unavailable_explicit_recovery_starts_a_shell_and_can_resume_after_restoration
 #[test]
 fn osc_resume_runs_inside_the_recovered_shell_and_a_failed_command_leaves_it_usable() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let config = s.root.join("config/herdr-core/config.toml");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
     std::fs::write(

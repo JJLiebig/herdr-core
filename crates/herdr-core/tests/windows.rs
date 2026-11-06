@@ -159,6 +159,7 @@ fn template_with_git(s: &Session, template: &str) -> String {
 #[test]
 fn a_template_submits_queued_text_with_an_ordered_key_sequence() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let probe = s.file(
         "queued-input.ps1",
         r#"[Console]::WriteLine('READER_READY')
@@ -197,6 +198,7 @@ Start-Sleep -Milliseconds 100
 fn templateless_codex_uses_right_enter_only_on_windows() {
     for app in ["codex", "other"] {
         let s = Session::new();
+        s.json(&["server", "start"]);
         let probe = s.file(
             "default-input.ps1",
             &format!(
@@ -234,6 +236,7 @@ Start-Sleep -Milliseconds 100
 #[test]
 fn child_notices_use_the_parent_templates_submit_keys() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let probe = s.file(
         "notice-input.ps1",
         r#"$e = [char]27
@@ -275,6 +278,7 @@ Start-Sleep -Milliseconds 100
 #[test]
 fn template_escape_and_character_are_separate_keys() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let probe = s.file(
         "escape.ps1",
         r#"$e = [char]27
@@ -611,6 +615,7 @@ fn rpc(s: &Session, method: &str, params: Value) -> Value {
 #[test]
 fn malformed_terminal_environment_is_rejected_before_spawning() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     for (key, value) in
         [("BAD", "before\0HC_INJECTED=after"), ("BAD\0HC_INJECTED", "after"), ("BAD=KEY", "after"), ("", "after")]
     {
@@ -646,69 +651,6 @@ Write-Output "drive=[$([Environment]::GetEnvironmentVariable('=C:'))]"
     for expected in ["value=[left=right]", "empty=True:[]", "unicode=[unicode]", r"drive=[C:\Windows]"] {
         assert!(output.contains(expected), "{reply}");
     }
-}
-
-#[test]
-fn local_and_ssh_clients_use_an_existing_core_instead_of_starting_another() {
-    let s = Session::new();
-    let first = s.json(&["server", "start"]);
-    for ssh in [false, true] {
-        let mut command = cmd(&s.name, &s.root);
-        if ssh {
-            command.env("SSH_CLIENT", "10.0.0.1 50000 22");
-        }
-        let out = command.args(["ls"]).output().unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        assert_eq!(s.json(&["server", "status"])["pid"], first["pid"]);
-    }
-}
-
-#[test]
-fn implicit_local_and_ssh_start_apply_the_same_desktop_policy() {
-    let mut outcomes = Vec::new();
-    for ssh in [false, true] {
-        let s = Session::new();
-        let mut command = cmd(&s.name, &s.root);
-        if ssh {
-            command.env("SSH_CLIENT", "10.0.0.1 50000 22");
-        }
-        let out = command.args(["ls"]).output().unwrap();
-        outcomes.push(out.status.success());
-        if out.status.success() {
-            assert!(s.json(&["server", "status"])["pid"].is_number());
-        } else {
-            let error: Value = serde_json::from_slice(&out.stderr).unwrap();
-            assert!(error["error"]["message"].as_str().unwrap().contains("desktop session"), "{error}");
-            assert!(error["error"]["hint"].as_str().unwrap().contains("open Herdr on that Windows machine"), "{error}");
-            assert_ne!(s.out(&["server", "status"]).0, 0, "refused startup left a core");
-        }
-        if !out.status.success() {
-            let exe = installed(&s);
-            let new = release(&s.root.join("new"), "new-build");
-            let mut update = cmd_at(&exe, &s.name, &s.root);
-            if ssh {
-                update.env("SSH_CLIENT", "10.0.0.1 50000 22");
-            }
-            let refused = update.args(["update", "--from", new.to_str().unwrap()]).output().unwrap();
-            assert!(!refused.status.success());
-            let error: Value = serde_json::from_slice(&refused.stderr).unwrap();
-            assert!(error["error"]["message"].as_str().unwrap().contains("desktop session"), "{error}");
-            assert!(marked(&exe, "old-build"), "refused update replaced the installed core");
-            assert!(!marked(&exe, "new-build"));
-            assert_ne!(s.out(&["server", "status"]).0, 0, "refused update left a core");
-        }
-        if out.status.success() {
-            assert_eq!(s.out(&["server", "stop"]).0, 0);
-        }
-        // Explicit startup must work even when implicit startup was refused.
-        let mut explicit = cmd(&s.name, &s.root);
-        if ssh {
-            explicit.env("SSH_CLIENT", "10.0.0.1 50000 22");
-        }
-        let out = explicit.args(["server", "start"]).output().unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    }
-    assert_eq!(outcomes[0], outcomes[1], "SSH variables must not change desktop startup policy");
 }
 
 #[test]
@@ -785,6 +727,7 @@ fn exec_returns_exact_bytes_and_ends_what_it_started_at_its_timeout() {
 #[test]
 fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let (code, out) = s.out(&["run", "--timeout", "20", "echo \"hi  there\" & exit 3"]);
     assert!(out.contains("\"hi  there\""), "{out}");
     assert_eq!(code, 3, "{out}");
@@ -801,6 +744,7 @@ fn a_shell_line_runs_in_cmd_quotes_and_all_and_no_program_is_powershell() {
 #[test]
 fn templates_use_cmd_and_preserve_arguments_and_the_first_message() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let agent = s.file(
         "agent with spaces.ps1",
         r#"$arguments = @($args)
@@ -888,6 +832,7 @@ while ($true) {
 #[test]
 fn message_wait_ignores_done_and_still_reports_a_child_exit() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let p = s.bg(&["powershell", "-NoProfile", "-Command", "Start-Sleep 100"]);
     let agent = s.file(
         "turn.ps1",
@@ -936,30 +881,6 @@ fn interrupt_is_ctrl_c_the_program_takes() {
     s.shows(&t, "Reply from");
     s.json(&["interrupt", &t, "--timeout", "5"]);
     wait_until("ping stopped", || s.json(&["get", &t])["state"] == "finished");
-}
-
-#[test]
-fn restart_and_a_core_crash_keep_terminals_and_stop_leaves_nothing() {
-    let s = Session::new();
-    s.json(&["server", "start"]);
-    let t = s.bg(&["ping", "-n", "120", "127.0.0.1"]);
-    let program = s.json(&["get", &t])["pid"].as_u64().unwrap();
-    let status = s.json(&["server", "status"]);
-    let holder = status["holder"]["pid"].as_u64().unwrap();
-
-    s.json(&["server", "restart"]);
-    assert_eq!(s.json(&["get", &t])["state"], "live");
-
-    let core = s.json(&["server", "status"])["pid"].as_u64().unwrap();
-    Command::new("taskkill").args(["/F", "/PID", &core.to_string()]).output().unwrap();
-    wait_until("core back", || !alive(core) && s.out(&["server", "status"]).0 == 0);
-    let after = s.json(&["server", "status"]);
-    assert_eq!(after["holder"]["pid"].as_u64(), Some(holder), "same holder: {after}");
-    assert_eq!(s.json(&["get", &t])["state"], "live");
-
-    let core = after["pid"].as_u64().unwrap();
-    s.json(&["server", "stop"]);
-    wait_until("nothing left", || ![program, holder, core].into_iter().any(alive));
 }
 
 #[test]
@@ -1053,6 +974,7 @@ fn a_failed_environment_handoff_leaves_the_core_running() {
 #[test]
 fn a_shell_behind_a_launcher_reports_its_own_folder_and_arguments() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let dir = s.root.join("child folder");
     std::fs::create_dir(&dir).unwrap();
     let expected = std::fs::canonicalize(&dir).unwrap();
@@ -1070,6 +992,7 @@ fn a_shell_behind_a_launcher_reports_its_own_folder_and_arguments() {
 #[test]
 fn a_shell_in_another_console_does_not_supply_this_terminals_folder() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let here = s.root.join("this console");
     let there = s.root.join("other console");
     std::fs::create_dir(&here).unwrap();
@@ -1101,6 +1024,7 @@ while ($true) {{ Start-Sleep 1 }}
 #[test]
 fn a_32_bit_shell_reports_its_folder_and_arguments() {
     let s = Session::new();
+    s.json(&["server", "start"]);
     let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"SysWOW64\cmd.exe");
     let dir = s.root.join("x86 folder");
     std::fs::create_dir(&dir).unwrap();
@@ -1171,3 +1095,6 @@ fn attach_types_into_the_program_and_detaches_on_its_key() {
 
 #[path = "herdr_local/windows_recovery.rs"]
 mod recovery;
+
+#[path = "herdr_local/windows_startup.rs"]
+mod startup;
