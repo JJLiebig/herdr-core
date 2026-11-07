@@ -531,7 +531,7 @@ Options:
       --raw                Paste text without the sender tag on messages between agents
       --force              Type even if the program is blocked (it may answer its dialog)
       --if <STATUS>        Only type if the status is exactly this [possible values: idle, working]
-      --wait               Then wait for the turn this send started
+      --wait               Then wait for completion after this send's turn
       --timeout <TIMEOUT>  With wait: seconds before it checks in (default: config, else 180)
   -h, --help               Print help
 ```

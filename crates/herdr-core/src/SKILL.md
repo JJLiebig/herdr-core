@@ -111,7 +111,8 @@ children finish:
   After a core crash, an unchanged final root word/turn cannot prove completion:
   a repeated done, or done followed by idle while core was absent, may leave
   the task pending until another root report or exit.
-- `not_started` from `send --wait`: it hasn't begun; read before deciding.
+- `not_started` from `send --wait`: no working state or later turn was observed;
+  read before deciding.
 - `hc wait <t>` waits for just that terminal. Plain programs have no agent
   status, so it normally waits for exit. `hc read <t>` gets output afterward.
 
@@ -120,6 +121,14 @@ that tag, for slash commands or other exact input (including punctuation and
 Unicode). It still pastes and submits normally, waits for readiness, refuses
 blocked targets unless `--force`, and supports `--if` and `--wait` locally
 and across machines.
+
+`send` reports observations, not message acceptance. `status` and `turn` are from
+when the text went in. `started: true` means working or a later turn was observed
+after sending, including a program that was already working; it does not prove
+a new task began. False means neither was observed within the observation window;
+null means status was unreported at delivery. On false, the CLI prints an inspection
+hint to stderr, including with JSON output. Read before resending:
+`hc read <t> --lines 0` (the current screen).
 
 Reports arrive tagged, for example:
 
