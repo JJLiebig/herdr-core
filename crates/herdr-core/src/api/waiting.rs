@@ -196,7 +196,8 @@ pub(super) async fn wait_children_everywhere(
 /// (for the parent itself: news it hasn't seen, even from before the wait), or
 /// a message typed into the waiting parent (it sits in its queue until this
 /// call ends); idle children are waited on too.
-/// `messages`: like `any`, but only blocked/error or exit/loss is child news.
+/// `messages`: like `any`, but only blocked/error, exit/loss, or a turn the
+/// parent asked for that ended without a report is child news.
 /// `others`: children on other machines count too, so none here is no answer.
 pub(super) async fn wait_children(
     core: &Arc<Core>,
@@ -271,6 +272,7 @@ pub(super) async fn wait_children(
                                 || !t.is_live()
                                 || t.program_lost()
                                 || t.status.as_ref().is_some_and(|s| matches!(s.state.as_str(), "blocked" | "error"))
+                                || t.unreported > seen_news(t)
                                 || t.failure_news.as_ref().is_some_and(|(news, _, _)| *news > seen_news(t)))
                     })
                     .collect();

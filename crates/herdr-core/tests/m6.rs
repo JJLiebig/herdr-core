@@ -521,6 +521,20 @@ fn message_mode_ignores_turn_ends_but_returns_reports_and_failures() {
 }
 
 #[test]
+fn message_mode_returns_when_a_turn_the_parent_asked_for_ends_without_a_report() {
+    let s = session();
+    let p = run(&s, &[], "r state=working; sleep 100");
+    let kid =
+        run(&s, &["--parent", &p], "stty -echo; r state=idle; read -r l; r state=working; r state=done; sleep 100");
+    wait_until("idle", || get(&s, &kid)["status"]["state"] == "idle" && get(&s, &p)["reported"] == true);
+    let waiting = wait_children(&s, &p, "messages");
+    std::thread::sleep(Duration::from_millis(100));
+    hc_in(&s, &p, &["send", &kid, "task"]);
+    let r = waiting.join().unwrap();
+    assert_eq!(ended(&r), [kid], "{r}");
+}
+
+#[test]
 fn message_wait_keeps_failure_news_when_the_same_output_clears_it() {
     let s = session();
     let p = run(&s, &[], "sleep 100");

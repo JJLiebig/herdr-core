@@ -525,7 +525,8 @@ pub struct WaitParams {
     /// still counts as stopped.
     /// `messages`: like `any`, but ignores ordinary turn ends (done/idle/cleared
     /// status). Returns for messages to the waiting parent, blocked/error news,
-    /// or child exit/loss. Timeout and human interruption are unchanged.
+    /// a turn the parent asked for that ended without a report, or child
+    /// exit/loss. Timeout and human interruption are unchanged.
     #[arg(long)]
     pub children: Option<Children>,
     /// For programs, not agents: end when output printed after the wait started
