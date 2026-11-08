@@ -129,7 +129,8 @@ their keys, refuses blocked targets unless `--force`, tags unless `--raw`,
 honors `--if`) but presses no submit key, so a person can edit the text and
 submit it. It asks for no turn: `started` is null and `--wait` is refused.
 Trailing line breaks are dropped. In a program without bracketed paste, a line
-break inside the text still acts as Enter.
+break inside the text still acts as Enter. The draft stays in the program's
+input: a later submitted send or automatic note to that terminal submits it too.
 
 `send` reports observations, not message acceptance. `status` and `turn` are from
 when the text went in. `started: true` means working or a later turn was observed
