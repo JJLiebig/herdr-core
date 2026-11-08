@@ -429,20 +429,27 @@ async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult,
 }
 
 async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcError> {
+    if p.no_submit && p.wait {
+        return Err(RpcError::invalid_params("no_submit submits nothing, so there is no turn to wait for"));
+    }
     let timeout = wait_timeout(core, p.timeout)?; // checked before anything is typed
     let id = resolve(core, &p.terminal)?;
-    let text = if p.raw { p.text } else { core.tagged(p.caller.as_deref(), id, &p.text, false) };
-    // From its parent, a message asks for a turn.
+    let submit = !p.no_submit;
+    // A trailing line break would press Enter in a program without bracketed paste.
+    let body = if submit { p.text.as_str() } else { p.text.trim_end_matches(['\r', '\n']) };
+    let text = if p.raw { body.to_string() } else { core.tagged(p.caller.as_deref(), id, body, false) };
+    // From its parent, a submitted message asks for a turn.
     let (asked, news) = {
         let st = core.lock();
         let t = st.reg.terminals.get(&id);
-        (p.caller.is_some() && t.is_some_and(|t| t.parent == p.caller), t.map_or(0, |t| t.news))
+        (submit && p.caller.is_some() && t.is_some_and(|t| t.parent == p.caller), t.map_or(0, |t| t.news))
     };
-    let sent = core.send(id, &text, p.force, p.only_if.map(|w| word(&w)).as_deref(), asked).await?;
+    let only_if = p.only_if.map(|w| word(&w));
+    let sent = core.send(id, &text, p.force, only_if.as_deref(), asked, submit).await?;
     // Its news until now is seen; the end of the turn this asks for is still to come.
     core.saw_until(p.caller.as_deref(), id, news);
     core.reported(p.caller.as_deref(), &crate::terminals::address(id));
-    if sent.status.as_deref() == Some("working") {
+    if submit && sent.status.as_deref() == Some("working") {
         let mut st = core.lock();
         let from = p
             .caller
@@ -455,7 +462,7 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
         drop(st);
         core.changed.notify_waiters();
     }
-    if let Some(caller) = &p.caller {
+    if let Some(caller) = p.caller.as_ref().filter(|_| submit) {
         core.lock().last_send.insert((caller.clone(), id), sent.turn);
     }
     let wait = if p.wait && sent.started == Some(false) {

@@ -69,6 +69,7 @@ hc ls                              # all live terminals, not just yours
 hc get review                      # one terminal's observed state/status
 hc send review "Focus on the first bug"
 hc send --raw review "/compact"     # exact text, without the sender tag
+hc send --no-submit review "Draft"  # paste only; a person edits and presses Enter
 hc send --wait review "Recheck the fix"
 hc read --lines 100 review          # screen plus history; waits return status only
 hc interrupt review                # stop its current turn, not the process
@@ -122,6 +123,13 @@ that tag, for slash commands or other exact input (including punctuation and
 Unicode). It still pastes and submits normally, waits for readiness, refuses
 blocked targets unless `--force`, and supports `--if` and `--wait` locally
 and across machines.
+
+`send --no-submit` pastes the same way (waits for a person to pause, holds
+their keys, refuses blocked targets unless `--force`, tags unless `--raw`,
+honors `--if`) but presses no submit key, so a person can edit the text and
+submit it. It asks for no turn: `started` is null and `--wait` is refused.
+Trailing line breaks are dropped. In a program without bracketed paste, a line
+break inside the text still acts as Enter.
 
 `send` reports observations, not message acceptance. `status` and `turn` are from
 when the text went in. `started: true` means working or a later turn was observed

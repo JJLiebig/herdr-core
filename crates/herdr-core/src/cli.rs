@@ -373,12 +373,14 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
                 );
             }
             let started = match r["started"].as_bool() {
+                _ if p.no_submit => "not submitted",
                 Some(true) => "working or a later turn observed",
                 Some(false) => "no working state or later turn observed",
                 None => "it doesn't report status",
             };
+            let verb = if p.no_submit { "pasted" } else { "sent" };
             let mut human =
-                format!("sent at turn {} ({}); {started}", r["turn"], r["status"].as_str().unwrap_or("no status"));
+                format!("{verb} at turn {} ({}); {started}", r["turn"], r["status"].as_str().unwrap_or("no status"));
             if !r["wait"].is_null() {
                 human = format!("{human}\n{}", describe_wait(&r["wait"]));
             }
@@ -997,7 +999,7 @@ mod tests {
         else {
             panic!()
         };
-        let want = json!({"terminal": "t3", "text": "hi there", "if": "idle", "force": false, "raw": true, "wait": true, "timeout": 2.5, "caller": null});
+        let want = json!({"terminal": "t3", "text": "hi there", "if": "idle", "force": false, "raw": true, "no_submit": false, "wait": true, "timeout": 2.5, "caller": null});
         assert_eq!(to(&p), want);
         assert!(serde_json::from_value::<SendParams>(want).is_ok(), "and the API reads it back");
 

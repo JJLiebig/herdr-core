@@ -467,12 +467,17 @@ pub struct PlainSub {
 pub struct SendParams {
     /// The terminal: `t7`, a name, or `machine/t7`.
     pub terminal: String,
-    /// Pasted, then submitted with Enter.
+    /// Pasted, then submitted with Enter unless `no_submit`.
     pub text: String,
     /// Paste text without the sender tag on messages between agents.
     #[arg(long)]
     #[serde(default)]
     pub raw: bool,
+    /// Paste only: nothing is submitted, so a person can edit it and press Enter.
+    /// Trailing line breaks are dropped. Not with `wait`.
+    #[arg(long)]
+    #[serde(default)]
+    pub no_submit: bool,
     /// Type even if the program is blocked (it may answer its dialog).
     #[arg(long)]
     #[serde(default)]
@@ -502,7 +507,8 @@ pub struct SendResult {
     pub turn: u64,
     /// Whether `working` or a later turn was observed after sending, within a few
     /// seconds. Includes an already-working program; not acknowledgment of the
-    /// message or a new task. False: neither observed; null: status was unreported.
+    /// message or a new task. False: neither observed; null: status was unreported,
+    /// or nothing was submitted (`no_submit`).
     pub started: Option<bool>,
     /// With `wait`: how that turn ended.
     #[serde(skip_serializing_if = "Option::is_none")]
