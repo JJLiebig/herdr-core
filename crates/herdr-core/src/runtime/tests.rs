@@ -37,7 +37,7 @@ async fn keys_pressed_during_a_paste_follow_its_submit() {
     // Ignore attach's resize frames. From here the fake holder sees only input.
     while frames.try_recv().is_ok() {}
     {
-        let sending = core.send(id, "abc", false, None, false);
+        let sending = core.send(id, "abc", false, None, false, true);
         tokio::pin!(sending);
         poll_fn(|cx| {
             assert!(sending.as_mut().poll(cx).is_pending(), "the paste must pause before submit");
@@ -52,6 +52,53 @@ async fn keys_pressed_during_a_paste_follow_its_submit() {
         sending.await.unwrap();
         assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"\r"));
         assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"Z"));
+    }
+    drop(core);
+    remove_root(&root);
+}
+
+#[tokio::test]
+async fn a_no_submit_send_pastes_without_pressing_a_submit_key() {
+    let (core, root) = test_core();
+    let (writer, frames) = mpsc::channel();
+    let (bye, _) = mpsc::channel();
+    let id = {
+        let mut st = core.lock();
+        let id =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0).unwrap();
+        st.reg.terminals.get_mut(&id).unwrap().holder = Some("fake".into());
+        st.screens.insert(id, Screen::new(80, 24, 1 << 20));
+        st.holders.push(Link { writer, pid: 0, instance: "fake".into(), current: true, bye, bye_rx: None });
+        id
+    };
+    // The draft comes from a child that owes this terminal a report.
+    let kid = {
+        let mut st = core.lock();
+        let parent = Some(crate::terminals::address(id));
+        let kid =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], parent, ..Default::default() }, 0);
+        let kid = kid.unwrap();
+        st.reg.terminals.get_mut(&kid).unwrap().asked = Some(0);
+        kid
+    };
+    let call = crate::api::Call { core: &core, conn: None, plain: None };
+    let params = json!({"terminal": crate::terminals::address(id), "text": "draft\n\r\n", "no_submit": true,
+        "caller": crate::terminals::address(kid)});
+    let mut waiting = params.clone();
+    waiting["wait"] = true.into();
+    let refused = crate::api::dispatch(&call, "terminal.send", waiting).await.unwrap_err();
+    assert_eq!(refused.kind, "invalid_params");
+    assert!(frames.try_recv().is_err(), "a refused send types nothing");
+
+    let sent = crate::api::dispatch(&call, "terminal.send", params).await.unwrap();
+    assert!(sent["started"].is_null(), "{sent}");
+    // Unbracketed, a trailing line break would be Enter: it is dropped.
+    assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"draft"));
+    assert!(frames.try_recv().is_err(), "no submit key follows the paste");
+    {
+        let st = core.lock();
+        let kid = &st.reg.terminals[&kid];
+        assert_eq!((kid.asked, kid.told_parent), (Some(0), false), "a draft is not the child's report");
     }
     drop(core);
     remove_root(&root);

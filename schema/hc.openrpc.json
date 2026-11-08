@@ -935,7 +935,7 @@
       "SendResult": {
         "properties": {
           "started": {
-            "description": "Whether `working` or a later turn was observed after sending, within a few\nseconds. Includes an already-working program; not acknowledgment of the\nmessage or a new task. False: neither observed; null: status was unreported.",
+            "description": "Whether `working` or a later turn was observed after sending, within a few\nseconds. Includes an already-working program; not acknowledgment of the\nmessage or a new task. False: neither observed; null: status was unreported,\nor nothing was submitted (`no_submit`).",
             "type": [
               "boolean",
               "null"
@@ -2551,6 +2551,16 @@
           }
         },
         {
+          "description": "Paste only: nothing is submitted, so a person can edit it and press Enter.\nTrailing line breaks are dropped. Not with `wait`.",
+          "name": "no_submit",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "Paste only: nothing is submitted, so a person can edit it and press Enter.\nTrailing line breaks are dropped. Not with `wait`.",
+            "type": "boolean"
+          }
+        },
+        {
           "description": "Paste text without the sender tag on messages between agents.",
           "name": "raw",
           "required": false,
@@ -2570,11 +2580,11 @@
           }
         },
         {
-          "description": "Pasted, then submitted with Enter.",
+          "description": "Pasted, then submitted with Enter unless `no_submit`.",
           "name": "text",
           "required": true,
           "schema": {
-            "description": "Pasted, then submitted with Enter.",
+            "description": "Pasted, then submitted with Enter unless `no_submit`.",
             "type": "string"
           }
         },

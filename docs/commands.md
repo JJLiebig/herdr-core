@@ -524,11 +524,12 @@ Usage: hc send [OPTIONS] <TERMINAL> <TEXT>
 
 Arguments:
   <TERMINAL>  The terminal: `t7`, a name, or `machine/t7`
-  <TEXT>      Pasted, then submitted with Enter
+  <TEXT>      Pasted, then submitted with Enter unless `no_submit`
 
 Options:
       --json               JSON output even in a terminal
       --raw                Paste text without the sender tag on messages between agents
+      --no-submit          Paste only: nothing is submitted, so a person can edit it and press Enter. Trailing line breaks are dropped. Not with `wait`
       --force              Type even if the program is blocked (it may answer its dialog)
       --if <STATUS>        Only type if the status is exactly this [possible values: idle, working]
       --wait               Then wait for completion after this send's turn

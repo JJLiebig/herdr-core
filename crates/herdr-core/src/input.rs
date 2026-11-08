@@ -195,9 +195,9 @@ impl Core {
         Ok(out)
     }
 
-    /// Paste + Enter, after a person has paused typing. Refuses a blocked
-    /// program (typing would answer its dialog) unless `force`. `asked`: its
-    /// parent is asking for a turn.
+    /// Paste + Enter (paste only unless `submit`), after a person has paused
+    /// typing. Refuses a blocked program (typing would answer its dialog) unless
+    /// `force`. `asked`: its parent is asking for a turn.
     pub async fn send(
         &self,
         id: u32,
@@ -205,12 +205,13 @@ impl Core {
         force: bool,
         only_if: Option<&str>,
         asked: bool,
+        submit: bool,
     ) -> Result<Sent, RpcError> {
-        self.send_message(id, text, force, only_if, asked.then_some(false)).await
+        self.send_message(id, text, force, only_if, asked.then_some(false), submit).await
     }
 
     pub(crate) async fn send_first_task(&self, id: u32, text: &str) -> Result<Sent, RpcError> {
-        self.send_message(id, text, false, None, Some(true)).await
+        self.send_message(id, text, false, None, Some(true), true).await
     }
 
     async fn send_message(
@@ -220,6 +221,7 @@ impl Core {
         force: bool,
         only_if: Option<&str>,
         task: Option<bool>, // asks for a turn: Some(whether it is the launch task)
+        submit: bool,
     ) -> Result<Sent, RpcError> {
         if let Some(t) = self.lock().reg.terminals.get(&id) {
             t.check_program()?;
@@ -262,11 +264,14 @@ impl Core {
                     None => Step::Write(bytes),
                 };
                 let mut steps = vec![paste];
-                steps.extend(submit_steps(screen, t)?);
+                if submit {
+                    steps.extend(submit_steps(screen, t)?);
+                }
                 Ok(((word, t.turn, t.reported), steps))
             })
             .await?;
-        let started = if reported {
+        // Nothing submitted: there is no start to observe.
+        let started = if reported && submit {
             let went =
                 |st: &State| st.reg.terminals.get(&id).is_none_or(|t| t.turn > turn || working(t) || !t.is_live());
             self.wait_for(started_window(), went).await;
