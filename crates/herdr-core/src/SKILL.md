@@ -39,6 +39,8 @@ hc run --bg --name review --cwd /path/to/repo reviewer "Review only src/x.rs. Re
 - Do not let children start more agents unless you explicitly assign that.
 - Put the first task in `run`: a send to a booting agent can be dropped.
   Templates combine their instructions and your task into the first message.
+- A task in the agent's own arguments gets no unreported-turn fallback note.
+  Use a template task, or the plain launch-and-send path below, for that fallback.
 - Without a fitting template, start an interactive agent directly:
 
 ```sh
@@ -156,7 +158,7 @@ Ask children to write long answers to a file and send its path. If you receive:
 
 Report with `hc send t3 "<result or blocker>"` when done or stuck, not just to
 acknowledge. hc itself notifies you when a child cannot report (blocked,
-error, exited), or ends a turn you started (its launch task or your send)
+error, exited), or ends a turn you started (a template task or your send)
 without reporting; inspect its screen.
 
 ## Run programs
