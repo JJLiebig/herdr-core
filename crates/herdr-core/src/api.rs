@@ -448,7 +448,10 @@ async fn terminal_send(core: Ctx<'_>, p: SendParams) -> Result<SendResult, RpcEr
     let sent = core.send(id, &text, p.force, only_if.as_deref(), asked, submit).await?;
     // Its news until now is seen; the end of the turn this asks for is still to come.
     core.saw_until(p.caller.as_deref(), id, news);
-    core.reported(p.caller.as_deref(), &crate::terminals::address(id));
+    if submit {
+        // An unsubmitted draft to its parent is not a report.
+        core.reported(p.caller.as_deref(), &crate::terminals::address(id));
+    }
     if submit && sent.status.as_deref() == Some("working") {
         let mut st = core.lock();
         let from = p

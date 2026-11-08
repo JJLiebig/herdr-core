@@ -71,8 +71,19 @@ async fn a_no_submit_send_pastes_without_pressing_a_submit_key() {
         st.holders.push(Link { writer, pid: 0, instance: "fake".into(), current: true, bye, bye_rx: None });
         id
     };
+    // The draft comes from a child that owes this terminal a report.
+    let kid = {
+        let mut st = core.lock();
+        let parent = Some(crate::terminals::address(id));
+        let kid =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], parent, ..Default::default() }, 0);
+        let kid = kid.unwrap();
+        st.reg.terminals.get_mut(&kid).unwrap().asked = Some(0);
+        kid
+    };
     let call = crate::api::Call { core: &core, conn: None, plain: None };
-    let params = json!({"terminal": crate::terminals::address(id), "text": "draft\n\r\n", "no_submit": true});
+    let params = json!({"terminal": crate::terminals::address(id), "text": "draft\n\r\n", "no_submit": true,
+        "caller": crate::terminals::address(kid)});
     let mut waiting = params.clone();
     waiting["wait"] = true.into();
     let refused = crate::api::dispatch(&call, "terminal.send", waiting).await.unwrap_err();
@@ -84,6 +95,11 @@ async fn a_no_submit_send_pastes_without_pressing_a_submit_key() {
     // Unbracketed, a trailing line break would be Enter: it is dropped.
     assert_eq!(frames.try_recv().unwrap(), proto::frame(proto::INPUT, id, b"draft"));
     assert!(frames.try_recv().is_err(), "no submit key follows the paste");
+    {
+        let st = core.lock();
+        let kid = &st.reg.terminals[&kid];
+        assert_eq!((kid.asked, kid.told_parent), (Some(0), false), "a draft is not the child's report");
+    }
     drop(core);
     remove_root(&root);
 }
