@@ -9,11 +9,10 @@ pub fn about(pid: i32) -> Option<crate::foreground::Foreground> {
     use windows_sys::Wdk::System::Threading::{
         NtQueryInformationProcess, ProcessBasicInformation, ProcessWow64Information,
     };
-    use windows_sys::Win32::Foundation::{HANDLE, LocalFree, UNICODE_STRING};
+    use windows_sys::Win32::Foundation::{HANDLE, UNICODE_STRING};
     use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
     use windows_sys::Win32::System::Kernel::STRING32;
     use windows_sys::Win32::System::Threading::*;
-    use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
 
     let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid as u32) };
     if raw.is_null() {
@@ -80,20 +79,11 @@ pub fn about(pid: i32) -> Option<crate::foreground::Foreground> {
     let image = String::from_utf16(&text(image)?).ok()?;
     let name = image.rsplit('\\').next().unwrap_or(&image).to_string();
 
-    let mut line = text(command_line)?;
-    line.push(0);
-    let mut argc = 0;
-    let list = unsafe { CommandLineToArgvW(line.as_ptr(), &mut argc) };
-    if list.is_null() {
-        return None;
-    }
-    let argv = (0..argc as usize)
-        .map(|i| unsafe {
-            let arg = *list.add(i);
-            String::from_utf16_lossy(std::slice::from_raw_parts(arg, (0..).take_while(|&n| *arg.add(n) != 0).count()))
-        })
+    let argv = super::split_command_line(text(command_line)?)
+        .ok()?
+        .into_iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    unsafe { LocalFree(list.cast()) };
     Some(Foreground { pid, name, argv, cwd })
 }
 

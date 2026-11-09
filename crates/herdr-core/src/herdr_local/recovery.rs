@@ -100,7 +100,7 @@ impl Core {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         let result = self
-            .type_in(id, crate::input::quiet(), |st, t| {
+            .type_in(id, crate::input::quiet(), true, |st, t| {
                 if t.scope.as_ref() != Some(&scope) || !t.keep || t.recovery.is_some() || t.status.is_some() {
                     return Err(RpcError::new("unavailable", "recovery shell changed before resume", ""));
                 }
@@ -180,7 +180,7 @@ impl Core {
             self.changed.notify_waiters();
             self.save(&st);
         }
-        Ok(public)
+        Ok(Public(st.reg.terminals[&id].clone()))
     }
 }
 
