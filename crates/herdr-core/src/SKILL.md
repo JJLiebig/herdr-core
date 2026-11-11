@@ -147,7 +147,7 @@ the person's last key. Set `draft_wait = 5` (seconds) in
 `~/.config/herdr-core/config.toml` (Windows: `%APPDATA%\herdr-core\config.toml`)
 to change that limit; `0` keeps only the quiet pause. Like `notes_quiet`,
 it is read for each delivery and takes precedence over the test environment
-fallback (`HC_DRAFT_MS`). Both settings require finite, non-negative seconds
+fallback (`HC_DRAFT_MS`). Both settings take finite seconds (a negative value means 0)
 that fit in a duration. If the config is invalid, delivery uses defaults and
 logs the config error once in `core.log`. Reverse sends allow at least the
 default 60-second hold, but a parent configured above that
@@ -357,16 +357,26 @@ keeps the last unambiguous process.
   bundled remote core: run `hc update` there instead. Root remotes receive the
   standalone release.
 - On macOS, desktop starts use a one-shot launchd job so quitting the launching
-  app doesn't end terminals. SSH starts stay direct. If launchd fails, startup
-  falls back to a direct child and logs the reason in `core.log`; that core may
-  end with its launching app.
+  app doesn't end terminals. Startup explicitly requests that job once, including
+  during login when automatic launches may be deferred. SSH starts stay direct.
+  If launchd fails, startup falls back to a direct child and logs the reason in
+  `core.log`; that core may end with its launching app. A start timeout records
+  the job label, failed phase and available spawn state before cleanup.
+- On macOS, reopening Herdr after logout/login refreshes an older GUI core's
+  login context while keeping surviving terminals. New terminals use the new
+  login; existing programs retain their original OS context. An explicit
+  `hc server restart` from a healthy login also retires holders from another
+  login without ending their programs. Viewing a healthy SSH core does not
+  replace it, and lock/unlock does not rotate holders. Cores installed before
+  this session metadata need an update or explicit restart once.
 - Updates and `hc server restart` keep the environment the core started with.
   Run `hc server restart --fresh` from a terminal outside Herdr to use that shell's
   environment for new terminals without ending running programs. Existing
   programs keep their environment; kept terminals use the fresh one after
   recovery. Stopping and starting also takes a fresh environment. Per-terminal
   API `env` overrides still apply, as do Linux session and Windows registry
-  refreshes. SIGTERM hands over terminals/screens but does not save an environment.
+  refreshes. On macOS, a saved SSH agent socket that no longer answers is replaced
+  by the launcher's value. SIGTERM hands over terminals/screens but does not save an environment.
   Preservation is best effort: a failed save never blocks a restart.
   The private handoff expires after three
   minutes and cannot cross a Linux/macOS boot. Windows checks age, not the boot:

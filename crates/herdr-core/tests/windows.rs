@@ -29,6 +29,7 @@ if ($request.method -ne 'hello') { exit 2 }
 "#,
     );
     let via = format!("  powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{probe}\"");
+    s.json(&["server", "start"]);
     let output = cmd(&s.name, &s.root).args(["machine", "add", "--via", &via, "--name", "box"]).output().unwrap();
     let error: Value = serde_json::from_slice(&output.stderr)
         .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&output.stderr)));

@@ -323,6 +323,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "login_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoginSession"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "OS login inherited by this core. Absent when unavailable or unsupported."
+          },
           "methods": {
             "items": {
               "type": "string"
@@ -465,6 +476,33 @@
           "terminals",
           "hidden_finished",
           "machines"
+        ],
+        "type": "object"
+      },
+      "LoginSession": {
+        "description": "The OS login a process inherited, rather than text restored from its environment.",
+        "properties": {
+          "gui": {
+            "description": "Unknown provenance never triggers automatic replacement.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "user"
         ],
         "type": "object"
       },
@@ -1466,7 +1504,7 @@
       "name": "Apache-2.0"
     },
     "title": "herdr-core",
-    "version": "0.1.19"
+    "version": "0.1.20"
   },
   "methods": [
     {
@@ -1584,7 +1622,15 @@
     },
     {
       "description": "Planned restart (e.g. after an update): screens are saved, programs keep running, the next core adopts them.",
-      "errors": [],
+      "errors": [
+        {
+          "code": -32602,
+          "data": {
+            "kind": "invalid_params"
+          },
+          "message": "invalid_params"
+        }
+      ],
       "name": "server.restart",
       "paramStructure": "by-name",
       "params": [
@@ -2523,6 +2569,13 @@
             "kind": "config"
           },
           "message": "config"
+        },
+        {
+          "code": -32000,
+          "data": {
+            "kind": "cancelled"
+          },
+          "message": "cancelled"
         }
       ],
       "name": "terminal.send",

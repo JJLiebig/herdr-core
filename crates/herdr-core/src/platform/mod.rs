@@ -5,6 +5,9 @@
 mod herdr_local;
 pub(crate) use herdr_local::{recovery_command, recovery_shell, resume_command};
 
+mod session;
+pub use session::{LoginSession, holder_current};
+
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
@@ -14,11 +17,15 @@ pub use unix::*;
 pub mod systemd;
 
 #[cfg(target_os = "macos")]
+mod macos_appkit;
+#[cfg(target_os = "macos")]
 mod macos_bundle;
 #[cfg(target_os = "macos")]
 mod macos_launchd;
 #[cfg(target_os = "macos")]
 mod macos_responsibility;
+#[cfg(target_os = "macos")]
+mod macos_session;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
 
@@ -45,6 +52,45 @@ pub fn daemon_startup() -> bool {
 pub fn prepare_core() {
     #[cfg(target_os = "macos")]
     macos_launchd::prepare_core();
+}
+
+/// Complete the holder's background-app registration before starting threads or terminals.
+pub fn prepare_holder() {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = macos_appkit::check_in() {
+        eprintln!("holder: background app registration unavailable: {error}");
+    }
+}
+
+pub fn login_session() -> Option<LoginSession> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_session::current()
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+pub fn connect_for_app(paths: &crate::paths::Paths) -> Result<Stream, crate::rpc::RpcError> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_session::connect(paths)
+    }
+    #[cfg(not(target_os = "macos"))]
+    crate::client::connect_or_start(paths)
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn holder_can_start_core(session: Option<LoginSession>) -> bool {
+    #[cfg(target_os = "macos")]
+    if let Some(id) = macos_session::graphic_session()
+        .ok()
+        .flatten()
+        .or_else(|| session.filter(|s| s.gui == Some(true)).map(|s| s.id))
+    {
+        return macos_appkit::gui_session_usable(id);
+    }
+    true
 }
 
 /// Daemons must not keep launchd's 256-fd or systemd's 1024-fd soft limit.
@@ -210,6 +256,14 @@ pub(crate) fn restored_environment(
     }
     #[cfg(not(target_os = "linux"))]
     let _ = fresh;
+    #[cfg(target_os = "macos")]
+    // A logged-out login leaves its agent socket on disk with nobody listening.
+    let stale_agent = saved
+        .iter()
+        .any(|(key, value)| key == "SSH_AUTH_SOCK" && std::os::unix::net::UnixStream::connect(value).is_err());
+    // An SSH launcher's agent is forwarded: it ends with that connection.
+    #[cfg(target_os = "macos")]
+    let forwarded = SSH_LOGIN.iter().any(|name| current.contains_key(OsStr::new(name)));
     let named = environment_key_eq;
     let local = |key: &OsStr| {
         let paths = [
@@ -234,10 +288,15 @@ pub(crate) fn restored_environment(
         #[cfg(target_os = "macos")]
         {
             keep |= named(key, "XPC_SERVICE_NAME");
+            keep |= stale_agent && named(key, "SSH_AUTH_SOCK");
         }
         keep
     };
     let discarded = |key: &OsStr| {
+        #[cfg(target_os = "macos")]
+        if named(key, "XPC_FLAGS") {
+            return true;
+        }
         [crate::sweep::VAR, crate::sweep::RUNTIME, "HC_LAUNCHD_DIRECT", "HC_LAUNCHD_DETACH", "_HC_RESPONSIBLE_PID"]
             .iter()
             .any(|name| named(key, name))
@@ -245,6 +304,10 @@ pub(crate) fn restored_environment(
     let mut env: std::collections::BTreeMap<_, _> =
         saved.into_iter().filter(|(key, _)| !local(key) && !discarded(key)).collect();
     env.extend(current.into_iter().filter(|(key, _)| local(key) && !discarded(key)));
+    #[cfg(target_os = "macos")]
+    if stale_agent && forwarded {
+        env.remove(OsStr::new("SSH_AUTH_SOCK"));
+    }
     env.insert(crate::sweep::RUNTIME.into(), "1".into());
     env
 }
@@ -272,6 +335,8 @@ pub async fn program_env() -> std::collections::BTreeMap<String, String> {
         .await
         .expect("environment reader panicked");
     }
+    #[cfg(target_os = "macos")]
+    env.remove("XPC_FLAGS");
     env.retain(|k, _| !SSH_LOGIN.contains(&k.as_str()));
     drop_unreachable_displays(&mut env);
     env
