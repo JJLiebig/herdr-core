@@ -75,7 +75,7 @@ pub(crate) async fn send(
         .and_then(|(_, caller)| parse_id(caller))
         .filter(|_| conn.is_none_or(|conn| !is_peer(core, conn)));
 
-    let mut grant = sender.and_then(|sender| {
+    let grant = sender.and_then(|sender| {
         let target = params["terminal"].as_str().filter(|target| !target.contains('/'))?;
         let mut st = core.lock();
         let recipient = mirrored_recipient(&st, machine, target)?;
@@ -88,13 +88,16 @@ pub(crate) async fn send(
         params["terminal"] = address(grant.recipient).into();
     }
     let reply = forward(core, machine, "terminal.send", params).await;
-    if let Some(grant) = &mut grant {
-        grant.confirmed = reply.is_ok();
+    if let Some(mut grant) = grant.filter(|_| reply.is_ok()) {
+        grant.confirmed = true;
+        drop(grant);
+        core.flush_saved().await?;
     }
     reply
 }
 
 pub(crate) fn allows(t: &Terminal, machine: &str, caller: Option<&str>) -> bool {
+    // The added core supplies the caller address over its trusted connection.
     let Some(id) = caller.and_then(parse_id).filter(|_| t.is_live()) else { return false };
     let grants = &t.reply_grants;
     grants.confirmed.get(machine).is_some_and(|ids| ids.contains(&id))
