@@ -156,9 +156,9 @@ pub struct Terminal {
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub afar: std::collections::BTreeSet<String>,
     /// By machine id, the terminal ids that may reply to this terminal.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "crate::herdr_local::remote_reply::ReplyGrants::confirmed_is_empty")]
     #[schemars(skip)]
-    pub(crate) reply_grants: BTreeMap<String, std::collections::BTreeSet<u32>>,
+    pub(crate) reply_grants: crate::herdr_local::remote_reply::ReplyGrants,
 }
 
 impl Terminal {
@@ -376,7 +376,7 @@ impl Registry {
                 t.pid = None;
                 t.holder = None;
             } else {
-                t.reply_grants.clear();
+                t.reply_grants = Default::default();
             }
             t.exit_code = code;
             t.signal = signal;

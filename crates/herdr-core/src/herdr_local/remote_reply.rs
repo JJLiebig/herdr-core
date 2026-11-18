@@ -3,11 +3,64 @@
 use crate::machines::Machine;
 use crate::remote::{forward, is_peer};
 use crate::rpc::RpcError;
-use crate::runtime::Core;
+use crate::runtime::{Core, State};
 use crate::terminals::{Terminal, address, parse_id};
 use crate::wire::Conn;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct ReplyGrants {
+    confirmed: BTreeMap<String, BTreeSet<u32>>,
+    /// One entry per send still in flight.
+    #[serde(skip)]
+    pending: Vec<(String, u32)>,
+}
+
+impl ReplyGrants {
+    pub(crate) fn confirmed_is_empty(&self) -> bool {
+        self.confirmed.is_empty()
+    }
+}
+
+struct PendingReply<'a> {
+    core: &'a Core,
+    sender: u32,
+    machine: &'a str,
+    recipient: u32,
+    confirmed: bool,
+}
+
+impl Drop for PendingReply<'_> {
+    fn drop(&mut self) {
+        let mut st = self.core.lock();
+        let Some(t) = st.reg.terminals.get_mut(&self.sender).filter(|t| t.is_live()) else { return };
+        let grants = &mut t.reply_grants;
+        let Some(index) = grants.pending.iter().position(|(m, id)| m == self.machine && *id == self.recipient) else {
+            return;
+        };
+        let (machine, recipient) = grants.pending.swap_remove(index);
+        if self.confirmed && grants.confirmed.entry(machine).or_default().insert(recipient) {
+            self.core.save(&st);
+        }
+    }
+}
+
+/// Identify a live terminal on this machine using its last advertised record.
+fn mirrored_recipient(st: &State, machine: &Machine, target: &str) -> Option<u32> {
+    let terminals = st.mirrors.get(&machine.id)?;
+    let prefix = format!("{}/", machine.name);
+    if let Some(id) = parse_id(target) {
+        return terminals.get(&format!("{prefix}{target}")).filter(|t| t["state"] == "live").map(|_| id);
+    }
+    terminals
+        .iter()
+        .filter(|(_, t)| t["state"] == "live" && t["name"].as_str() == Some(target))
+        .find_map(|(address, _)| parse_id(address.strip_prefix(&prefix)?))
+}
 
 pub(crate) async fn send(
     core: &Core,
@@ -20,41 +73,30 @@ pub(crate) async fn send(
         .and_then(|caller| caller.split_once('/'))
         .filter(|(owner, _)| *owner == core.info.id)
         .and_then(|(_, caller)| parse_id(caller))
-        .filter(|id| {
-            conn.is_none_or(|conn| !is_peer(core, conn))
-                && core.lock().reg.terminals.get(id).is_some_and(Terminal::is_live)
-        });
-    let target = params["terminal"].as_str().filter(|target| !target.contains('/'));
-    let Some((sender, target)) = sender.zip(target) else {
-        return forward(core, machine, "terminal.send", params).await;
-    };
+        .filter(|_| conn.is_none_or(|conn| !is_peer(core, conn)));
 
-    // Send to the resolved id so a reused name cannot grant access to the wrong terminal.
-    let recipient = if let Some(id) = parse_id(target) {
-        id
-    } else {
-        let found = forward(core, machine, "terminal.get", json!({"terminal": target})).await?;
-        let id = found["address"]
-            .as_str()
-            .and_then(|address| address.split_once('/'))
-            .filter(|(owner, _)| *owner == machine.name)
-            .and_then(|(_, terminal)| parse_id(terminal))
-            .ok_or_else(|| RpcError::internal(format!("{} did not identify {target:?}", machine.name)))?;
-        params["terminal"] = address(id).into();
-        id
-    };
-
-    let reply = forward(core, machine, "terminal.send", params).await?;
-    let mut st = core.lock();
-    if let Some(t) = st.reg.terminals.get_mut(&sender).filter(|t| t.is_live())
-        && t.reply_grants.entry(machine.id.clone()).or_default().insert(recipient)
-    {
-        core.save(&st);
+    let mut grant = sender.and_then(|sender| {
+        let target = params["terminal"].as_str().filter(|target| !target.contains('/'))?;
+        let mut st = core.lock();
+        let recipient = mirrored_recipient(&st, machine, target)?;
+        let terminal = st.reg.terminals.get_mut(&sender).filter(|t| t.is_live())?;
+        terminal.reply_grants.pending.push((machine.id.clone(), recipient));
+        Some(PendingReply { core, sender, machine: &machine.id, recipient, confirmed: false })
+    });
+    if let Some(grant) = &grant {
+        // Use the same identity for delivery and authorization even if the name changes hands.
+        params["terminal"] = address(grant.recipient).into();
     }
-    Ok(reply)
+    let reply = forward(core, machine, "terminal.send", params).await;
+    if let Some(grant) = &mut grant {
+        grant.confirmed = reply.is_ok();
+    }
+    reply
 }
 
 pub(crate) fn allows(t: &Terminal, machine: &str, caller: Option<&str>) -> bool {
-    t.is_live()
-        && caller.and_then(parse_id).is_some_and(|id| t.reply_grants.get(machine).is_some_and(|ids| ids.contains(&id)))
+    let Some(id) = caller.and_then(parse_id).filter(|_| t.is_live()) else { return false };
+    let grants = &t.reply_grants;
+    grants.confirmed.get(machine).is_some_and(|ids| ids.contains(&id))
+        || grants.pending.iter().any(|(m, recipient)| m == machine && *recipient == id)
 }

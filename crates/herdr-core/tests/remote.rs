@@ -391,11 +391,24 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
 fn only_the_remote_terminal_messaged_can_reply() {
     let (rohan, s) = with_rohan();
     let agent = script(&s, "stty -echo; r state=idle; cat");
+    let worker = script(
+        &s,
+        r#"stty -echo; r state=idle; while read -r line; do
+            case "$line" in *task*) r state=working; w turn-done; r state=done ;; esac
+        done"#,
+    );
     let local = run(&s, &["sh", "-c", &agent]);
-    let remote = run(&rohan, &["--name", "review", "sh", "-c", &agent]);
+    let remote = run(&rohan, &["--name", "review", "sh", "-c", &worker]);
     let other = run(&rohan, &["sh", "-c", &agent]);
-    wait_until("both agents are ready", || {
-        get(&s, &local)["reported"] == true && get(&rohan, &remote)["reported"] == true
+    let remote_address = format!("rohan/{remote}");
+    wait_until("the local agent and its mirror of the remote agent are ready", || {
+        let snapshot = s.connect().call(1, "events.subscribe", json!({}));
+        get(&s, &local)["reported"] == true
+            && snapshot["result"]["terminals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["address"] == remote_address && t["reported"] == true)
     });
     let status = s.json(&["server", "status"]);
     let back = format!("{}/{local}", status["core"]["id"].as_str().unwrap());
@@ -408,31 +421,46 @@ fn only_the_remote_terminal_messaged_can_reply() {
     s.json(&["send", "rohan/review", "from a shell"]);
     denied(call_back("terminal.send", &remote, "after a shell send"));
 
-    let params = json!({"terminal": "rohan/review", "caller": local, "text": "task"});
-    let mut mismatch = params.clone();
-    mismatch["if"] = "working".into();
+    let mismatch = json!({"terminal": "rohan/review", "caller": local, "text": "task", "if": "working"});
     let refused = s.connect().call(1, "terminal.send", mismatch);
     assert_eq!(refused["error"]["data"]["kind"], "status_mismatch", "{refused}");
     denied(call_back("terminal.send", &remote, "after a refused send"));
 
-    let sent = s.connect().call(1, "terminal.send", params);
-    assert!(sent.get("result").is_some(), "{sent}");
-    let reply = |message| {
-        let sent = call_back("terminal.send", &remote, message);
+    let received = |sent: Value, message| {
         assert!(sent.get("result").is_some(), "{sent}");
         wait_until("the tagged reply", || {
             text(&s, &local).contains(&format!("<hc from=\"rohan/{remote}\">{message}</hc>"))
         });
     };
-    reply("answer");
-    denied(call_back("terminal.send", &other, "from another terminal"));
-    for method in ["terminal.get", "terminal.read", "terminal.wait"] {
-        denied(call_back(method, &remote, ""));
-    }
+    let during_turn = std::thread::scope(|scope| {
+        let sending = scope.spawn(|| {
+            s.cmd()
+                .env("HC_TERMINAL_ID", &local)
+                .args(["--json", "send", "--wait", "--timeout", "15", "rohan/review", "task"])
+                .output()
+                .unwrap()
+        });
+        wait_until("the recipient is processing the message", || get(&rohan, &remote)["status"]["state"] == "working");
+        let overlap = json!({"terminal": "rohan/review", "caller": local, "text": "another message", "if": "idle"});
+        let refused = s.connect().call(1, "terminal.send", overlap);
+        assert_eq!(refused["error"]["data"]["kind"], "status_mismatch", "{refused}");
+        denied(call_back("terminal.send", &other, "from another terminal"));
+        for method in ["terminal.get", "terminal.read", "terminal.wait"] {
+            denied(call_back(method, &remote, ""));
+        }
+        let response = call_back("terminal.send", &remote, "answer");
+        touch(&s, "turn-done");
+        let sent = sending.join().unwrap();
+        assert!(sent.status.success(), "{}", String::from_utf8_lossy(&sent.stderr));
+        let sent: Value = serde_json::from_slice(&sent.stdout).unwrap();
+        assert_eq!(sent["wait"]["status"], "done", "{sent}");
+        response
+    });
+    received(during_turn, "answer");
 
     s.json(&["server", "restart"]);
     wait_until("the line is back", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
-    reply("answer after restart");
+    received(call_back("terminal.send", &remote, "answer after restart"), "answer after restart");
     s.json(&["kill", &local]);
     denied(call_back("terminal.send", &remote, "after exit"));
 }
