@@ -24,7 +24,9 @@ if (-not (Test-Path $zip)) {
 }
 Check $zip $sha.nupkg
 if (Test-Path $work) { Remove-Item -Recurse -Force $work }
-Expand-Archive $zip $work
+# .NET, not Expand-Archive: that one fails the same way.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::ExtractToDirectory($zip, $work)
 New-Item -ItemType Directory -Force "$Dest\conpty\x64" | Out-Null
 foreach ($pair in @(("runtimes/win-x64/native/conpty.dll", "conpty\conpty.dll"), ("build/native/runtimes/x64/OpenConsole.exe", "conpty\x64\OpenConsole.exe"))) {
     Check (Join-Path $work $pair[0]) $sha[$pair[0]]
