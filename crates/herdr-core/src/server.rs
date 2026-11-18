@@ -501,7 +501,11 @@ async fn handle(
         },
         Ok(Some((to, routed))) => {
             let there = routed["terminal"].as_str().unwrap_or_default().to_string();
-            let result = crate::remote::forward_to(core, &to, method, routed).await;
+            let result = if let (crate::remote::To::Machine(machine), "terminal.send") = (&to, method) {
+                crate::herdr_local::remote_reply::send(core, machine, conn, routed).await
+            } else {
+                crate::remote::forward_to(core, &to, method, routed).await
+            };
             if result.is_ok() && method == "terminal.send" && params["no_submit"] != true {
                 crate::remote::reported_afar(core, &to, params["caller"].as_str(), &there).await;
             }

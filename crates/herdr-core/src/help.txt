@@ -43,6 +43,7 @@ More
 
 <t> is an address like t7 or t1b, or a name. In a terminal, attach, read, get,
 kill, rm, wait and interrupt pick one when it's left out.
+A terminal on an added machine can reply to an hc terminal that sent it a message.
 Options: --json (default when piped; run and read print text), -V --version,
 --licenses (what hc includes, and their licenses).
 Per command: hc <command> --help

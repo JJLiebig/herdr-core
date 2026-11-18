@@ -155,6 +155,10 @@ pub struct Terminal {
     /// Machines (core ids) it started work on: they may call back to it.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub afar: std::collections::BTreeSet<String>,
+    /// By machine id, the terminal ids that may reply to this terminal.
+    #[serde(default, skip_serializing_if = "crate::herdr_local::remote_reply::ReplyGrants::confirmed_is_empty")]
+    #[schemars(skip)]
+    pub(crate) reply_grants: crate::herdr_local::remote_reply::ReplyGrants,
 }
 
 impl Terminal {
@@ -329,6 +333,7 @@ impl Registry {
                 paste_gap_ms: new.template.as_ref().and_then(|t| t.paste_gap_ms),
                 foreground: None,
                 afar: Default::default(),
+                reply_grants: Default::default(),
                 template: new.template.map(|t| t.name),
                 first_message: None,
                 holder: None,
@@ -370,6 +375,8 @@ impl Registry {
                 t.schedule_restart(now_ms);
                 t.pid = None;
                 t.holder = None;
+            } else {
+                t.reply_grants = Default::default();
             }
             t.exit_code = code;
             t.signal = signal;
@@ -445,6 +452,7 @@ const PRIVATE: &[&str] = &[
     "full_screen",
     "win32_input",
     "afar",
+    "reply_grants",
     "last_cwd",
     "restart_env",
     "recovery",

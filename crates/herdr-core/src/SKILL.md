@@ -154,6 +154,10 @@ default 60-second hold, but a parent configured above that
 can still outwait a child with a shorter limit. Sends to an added machine keep
 waiting while its line is alive.
 
+A terminal on an added machine can reply to a message from a local terminal,
+including during `hc send --wait`. Use `hc send` with the sender address in
+the `<hc>` tag. Reply access lasts until the local terminal ends.
+
 Reports arrive tagged, for example:
 
 ```text
