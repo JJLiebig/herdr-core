@@ -558,25 +558,29 @@ fn apply(record: &mut Value, kind: &str, data: &Value) {
 /// What a machine may ask of terminals here that are parents of its own.
 const CALLS_BACK: &[&str] = &["terminal.send", "terminal.get", "terminal.read", "terminal.wait"];
 
-/// A call or a note from a machine we dialed. It reaches only terminals here
-/// that started work there: adding a machine gives it no say over the rest.
+/// A call or a note from a machine we dialed. It reaches parents here, or
+/// for a send, the local terminal that granted this caller a reply.
 async fn from_machine(core: Arc<Core>, m: Machine, line: Arc<Line>, message: Value) {
     let method = message["method"].as_str().unwrap_or_default();
     let mut params = message["params"].clone();
     let key = if method == "notes" { "parent" } else { "terminal" };
-    let parent = params[key].as_str().and_then(|t| {
+    let target = params[key].as_str().and_then(|t| {
         let st = core.lock();
         let id = st.reg.resolve(crate::addr::local(t, &core.info.id, &core.info.name).ok()?).ok()?;
-        st.reg.terminals.get(&id).filter(|t| t.afar.contains(&m.id)).map(|_| id)
+        let t = st.reg.terminals.get(&id)?;
+        (t.afar.contains(&m.id)
+            || method == "terminal.send"
+                && crate::herdr_local::remote_reply::allows(t, &m.id, params["caller"].as_str()))
+        .then_some(id)
     });
     if method == "notes" {
-        if let (Some(id), Some(text)) = (parent, params["text"].as_str()) {
+        if let (Some(id), Some(text)) = (target, params["text"].as_str()) {
             core.lock().afar_notes.entry(id).or_default().push(text.into());
             let _ = core.jobs.send(crate::notes::Job::Notes(id));
         }
         return;
     }
-    let result = match parent.filter(|_| CALLS_BACK.contains(&method)) {
+    let result = match target.filter(|_| CALLS_BACK.contains(&method)) {
         None => Err(RpcError::new(
             "denied",
             format!("{} may only reach the terminals here that started its own", m.name),

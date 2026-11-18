@@ -388,6 +388,56 @@ fn a_child_on_another_machine_reports_back_to_its_parent() {
 }
 
 #[test]
+fn only_the_remote_terminal_messaged_can_reply() {
+    let (rohan, s) = with_rohan();
+    let agent = script(&s, "stty -echo; r state=idle; cat");
+    let local = run(&s, &["sh", "-c", &agent]);
+    let remote = run(&rohan, &["--name", "review", "sh", "-c", &agent]);
+    let other = run(&rohan, &["sh", "-c", &agent]);
+    wait_until("both agents are ready", || {
+        get(&s, &local)["reported"] == true && get(&rohan, &remote)["reported"] == true
+    });
+    let status = s.json(&["server", "status"]);
+    let back = format!("{}/{local}", status["core"]["id"].as_str().unwrap());
+    let call_back = |method: &str, caller: &str, message: &str| {
+        rohan.connect().call(1, method, json!({"terminal": back, "caller": caller, "text": message, "timeout": 0}))
+    };
+    let denied = |response: Value| assert_eq!(response["error"]["data"]["kind"], "denied", "{response}");
+
+    denied(call_back("terminal.send", &remote, "before"));
+    s.json(&["send", "rohan/review", "from a shell"]);
+    denied(call_back("terminal.send", &remote, "after a shell send"));
+
+    let params = json!({"terminal": "rohan/review", "caller": local, "text": "task"});
+    let mut mismatch = params.clone();
+    mismatch["if"] = "working".into();
+    let refused = s.connect().call(1, "terminal.send", mismatch);
+    assert_eq!(refused["error"]["data"]["kind"], "status_mismatch", "{refused}");
+    denied(call_back("terminal.send", &remote, "after a refused send"));
+
+    let sent = s.connect().call(1, "terminal.send", params);
+    assert!(sent.get("result").is_some(), "{sent}");
+    let reply = |message| {
+        let sent = call_back("terminal.send", &remote, message);
+        assert!(sent.get("result").is_some(), "{sent}");
+        wait_until("the tagged reply", || {
+            text(&s, &local).contains(&format!("<hc from=\"rohan/{remote}\">{message}</hc>"))
+        });
+    };
+    reply("answer");
+    denied(call_back("terminal.send", &other, "from another terminal"));
+    for method in ["terminal.get", "terminal.read", "terminal.wait"] {
+        denied(call_back(method, &remote, ""));
+    }
+
+    s.json(&["server", "restart"]);
+    wait_until("the line is back", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
+    reply("answer after restart");
+    s.json(&["kill", &local]);
+    denied(call_back("terminal.send", &remote, "after exit"));
+}
+
+#[test]
 fn raw_sends_across_machines_keep_delivery_rules() {
     let (rohan, s) = with_rohan();
     let body = script(
