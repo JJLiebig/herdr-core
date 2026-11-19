@@ -1,6 +1,6 @@
 //! Ordered registry persistence; recovery waits under the state lock for durability.
 use crate::paths::write_atomic;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -56,7 +56,7 @@ impl RegistryWriter {
                     if let Some(reply) = reply {
                         let _ = reply.send(result);
                     } else if let Err(e) = result {
-                        eprintln!("core: cannot save terminals: {e}");
+                        let _ = writeln!(io::stderr(), "core: cannot save terminals: {e}");
                     }
                     done.send_replace(version);
                     pending = mutex.lock().unwrap();

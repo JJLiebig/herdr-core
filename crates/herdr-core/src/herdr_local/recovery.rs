@@ -7,6 +7,7 @@ use crate::terminals::{Public, Terminal};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
@@ -75,7 +76,8 @@ impl Core {
         if let Err(e) = self.save_durable(bytes) {
             let t = st.reg.terminals.get_mut(&id).expect("live terminal");
             (t.resume_app, t.resume_session) = was;
-            eprintln!("core: cannot save resume session for {}: {e}", crate::terminals::address(id));
+            let _ =
+                writeln!(io::stderr(), "core: cannot save resume session for {}: {e}", crate::terminals::address(id));
         }
     }
 
@@ -94,7 +96,8 @@ impl Core {
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
-                eprintln!("core: recovery shell for {} did not settle", crate::terminals::address(id));
+                let _ =
+                    writeln!(io::stderr(), "core: recovery shell for {} did not settle", crate::terminals::address(id));
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -111,7 +114,12 @@ impl Core {
             })
             .await;
         if let Err(e) = result {
-            eprintln!("core: cannot type recovery command for {}: {}", crate::terminals::address(id), e.message);
+            let _ = writeln!(
+                io::stderr(),
+                "core: cannot type recovery command for {}: {}",
+                crate::terminals::address(id),
+                e.message
+            );
         }
     }
 

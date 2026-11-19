@@ -1,4 +1,4 @@
-//! Windows process observation: shell children and native/WoW64 process parameters.
+//! Windows process observation: native/WoW64 process parameters.
 
 /// The folder and command line Windows keeps in this process's memory.
 pub fn about(pid: i32) -> Option<crate::foreground::Foreground> {
@@ -85,82 +85,4 @@ pub fn about(pid: i32) -> Option<crate::foreground::Foreground> {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
     Some(Foreground { pid, name, argv, cwd })
-}
-
-/// ConPTY has no foreground group. Follow a unique shell child through launchers;
-/// when several shells are running, keep the last unambiguous process.
-pub fn shell_pid(pid: u32) -> u32 {
-    use std::mem::{size_of, zeroed};
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
-    let Some(host) = console_host(pid) else { return pid };
-    let mut shells = Vec::new();
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == INVALID_HANDLE_VALUE {
-            return pid;
-        }
-        let snapshot = OwnedHandle::from_raw_handle(snapshot);
-        let mut entry: PROCESSENTRY32W = zeroed();
-        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-        let mut ok = Process32FirstW(snapshot.as_raw_handle() as HANDLE, &mut entry);
-        while ok != 0 {
-            let end = entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(entry.szExeFile.len());
-            let name = String::from_utf16_lossy(&entry.szExeFile[..end]).to_ascii_lowercase();
-            if matches!(
-                name.as_str(),
-                "cmd.exe" | "powershell.exe" | "pwsh.exe" | "sh.exe" | "bash.exe" | "zsh.exe" | "fish.exe" | "nu.exe"
-            ) {
-                shells.push((entry.th32ProcessID, entry.th32ParentProcessID));
-            }
-            ok = Process32NextW(snapshot.as_raw_handle() as HANDLE, &mut entry);
-        }
-    }
-    unique_shell(pid, shells, |child| console_host(child) == Some(host))
-}
-
-fn console_host(pid: u32) -> Option<usize> {
-    use std::mem::size_of;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Wdk::System::Threading::NtQueryInformationProcess;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        return None;
-    }
-    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
-    let mut host = 0usize;
-    // ProcessConsoleHostProcess (49): the host PID with flags in its low two bits.
-    let status = unsafe {
-        NtQueryInformationProcess(handle.as_raw_handle(), 49, (&raw mut host).cast(), size_of::<usize>() as u32, &mut 0)
-    };
-    (status == 0 && host & !3 != 0).then_some(host & !3)
-}
-
-fn unique_shell(mut pid: u32, mut shells: Vec<(u32, u32)>, same_console: impl Fn(u32) -> bool) -> u32 {
-    loop {
-        let mut children = shells.iter().filter(|(child, parent)| *parent == pid && same_console(*child));
-        let Some(&(child, _)) = children.next() else { return pid };
-        if children.next().is_some() {
-            return pid;
-        }
-        // Remove visited entries so even a snapshot with recycled parent PIDs terminates.
-        shells.retain(|(p, _)| *p != pid);
-        pid = child;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::unique_shell;
-
-    #[test]
-    fn follows_shell_chains_but_does_not_guess_between_siblings() {
-        assert_eq!(unique_shell(1, vec![(2, 1), (3, 2)], |_| true), 3);
-        assert_eq!(unique_shell(1, vec![(2, 1), (3, 2), (4, 2)], |_| true), 2);
-        assert_eq!(unique_shell(1, vec![], |_| true), 1);
-        assert_eq!(unique_shell(1, vec![(2, 1), (3, 1)], |pid| pid == 3), 3);
-        assert_eq!(unique_shell(1, vec![(2, 1), (1, 2)], |_| true), 2);
-    }
 }

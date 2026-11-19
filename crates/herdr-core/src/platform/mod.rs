@@ -14,7 +14,16 @@ mod unix;
 pub use unix::*;
 
 #[cfg(target_os = "linux")]
+mod linux_login;
+#[cfg(target_os = "linux")]
 pub mod systemd;
+
+/// Only a new SSH-started Linux core imports login settings; holders inherit the core.
+#[allow(unused_variables)]
+pub fn core_environment(cmd: &mut std::process::Command, state: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    linux_login::apply(cmd, state);
+}
 
 #[cfg(target_os = "macos")]
 mod macos_appkit;
@@ -28,6 +37,25 @@ mod macos_responsibility;
 mod macos_session;
 #[cfg(target_os = "macos")]
 mod macos_shutdown;
+
+/// Whether this core's systemd user manager stays alive after the last logout,
+/// and the account an administrator can enable lingering for.
+pub fn logout_linger() -> (Option<bool>, Option<String>) {
+    #[cfg(target_os = "linux")]
+    {
+        systemd::logout_linger()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (None, None)
+    }
+}
+
+/// Refresh logout survival away from request handling.
+pub fn start_logout_linger() {
+    #[cfg(target_os = "linux")]
+    systemd::start_logout_linger();
+}
 
 /// Whether foreground observations can distinguish a shell from its jobs.
 pub fn foreground_tracks_jobs() -> bool {
@@ -197,6 +225,8 @@ pub use windows_exec::*;
 mod windows_env;
 #[cfg(windows)]
 pub use windows_env::validate_env;
+#[cfg(windows)]
+mod windows_foreground;
 #[cfg(windows)]
 pub(crate) mod windows_process;
 #[cfg(windows)]
