@@ -277,9 +277,9 @@ async fn terminal_list(core: Ctx<'_>, p: ListParams) -> Result<ListResult, RpcEr
     // Asked from another machine: only ours. Two machines that added each
     // other would otherwise ask each other back until the timeout.
     let afar = from_afar(core);
-    let (mut terminals, mut hidden_finished, machines) = {
+    let (mut terminals, mut hidden_finished, machines, pruned) = {
         let mut st = core.lock();
-        core.prune(&mut st);
+        let pruned = core.prune(&mut st);
         let matching: Vec<&Terminal> = st
             .reg
             .terminals
@@ -290,7 +290,7 @@ async fn terminal_list(core: Ctx<'_>, p: ListParams) -> Result<ListResult, RpcEr
         let terminals: Vec<serde_json::Value> =
             matching.into_iter().filter(|t| p.all || t.is_live()).cloned().map(|t| json!(Public(t))).collect();
         let machines = if afar { Vec::new() } else { st.machines.clone() };
-        (terminals, hidden, machines)
+        (terminals, hidden, machines, pruned)
     };
     // Each machine at once, each given a moment: a slow one never holds up the list.
     let asks: Vec<_> = machines
@@ -313,15 +313,19 @@ async fn terminal_list(core: Ctx<'_>, p: ListParams) -> Result<ListResult, RpcEr
         let st = core.lock();
         machines.iter().map(|m| crate::remote::view(&st, m)).collect()
     };
-    core.flush_saved().await?;
+    if let Some(version) = pruned {
+        core.flush_saved_through(version).await?;
+    }
     Ok(ListResult { terminals, hidden_finished, machines })
 }
 
 async fn terminal_get(core: Ctx<'_>, p: TerminalParams) -> Result<Public, RpcError> {
     let id = resolve(core, &p.terminal)?;
-    core.saw(p.caller.as_deref(), id);
+    let acknowledged = core.saw(p.caller.as_deref(), id);
     let result = record(core, id).map(Public);
-    core.flush_saved().await?;
+    if let Some(version) = acknowledged {
+        core.flush_saved_through(version).await?;
+    }
     result
 }
 

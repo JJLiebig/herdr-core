@@ -20,6 +20,9 @@ use tokio::sync::{Notify, oneshot};
 mod persistence;
 use persistence::RegistryWriter;
 
+#[path = "runtime/herdr_local/registry_reads.rs"]
+mod registry_reads;
+
 pub struct Core {
     pub info: CoreInfo,
     pub login_session: Option<platform::LoginSession>,
@@ -250,16 +253,7 @@ impl Core {
     /// Attach, events.subscribe snapshots, forwarded run `afar`, and NotesAfar replies do not wait.
     /// Completed write failures are logged, as before; a stuck disk still times out.
     pub async fn flush_saved(&self) -> Result<(), crate::rpc::RpcError> {
-        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush())
-            .await
-            .map_err(|_| {
-                crate::rpc::RpcError::new(
-                    "unavailable",
-                    "registry persistence timed out; the operation may already have completed",
-                    "check the terminal and disk before retrying",
-                )
-            })?
-            .map_err(|e| crate::rpc::RpcError::internal(format!("cannot save terminals: {e}")))
+        self.flush_saved_through(self.submitted_registry_version()).await
     }
 
     /// For frequent changes a crash may lose (the next start rebuilds them):
@@ -818,10 +812,15 @@ impl Core {
 
     /// Forgets finished terminals past their retention. Runs when one finishes,
     /// at startup and on every list, so a quiet core keeps nothing too long.
-    pub fn prune(&self, st: &mut State) {
-        for gone in st.reg.expired(now_ms()) {
+    pub fn prune(&self, st: &mut State) -> Option<u64> {
+        let expired = st.reg.expired(now_ms());
+        if expired.is_empty() {
+            return None;
+        }
+        for gone in expired {
             self.remove(st, gone);
         }
+        Some(self.submitted_registry_version())
     }
 
     /// The screen text of a live or finished terminal.

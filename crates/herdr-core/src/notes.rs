@@ -141,12 +141,12 @@ impl Core {
     }
 
     /// The caller looked at `id`; if it is the parent, that news is seen.
-    pub fn saw(&self, caller: Option<&str>, id: u32) {
-        self.saw_until(caller, id, u64::MAX);
+    pub fn saw(&self, caller: Option<&str>, id: u32) -> Option<u64> {
+        self.saw_until(caller, id, u64::MAX)
     }
 
     /// `saw`, for its news up to `news` only.
-    pub fn saw_until(&self, caller: Option<&str>, id: u32, news: u64) {
+    pub fn saw_until(&self, caller: Option<&str>, id: u32, news: u64) -> Option<u64> {
         let mut st = self.lock();
         if let Some(t) = st.reg.terminals.get_mut(&id)
             && caller.is_some()
@@ -156,6 +156,9 @@ impl Core {
             t.seen = t.news.min(news);
             t.seen_ms = Some(now_ms());
             self.save(&st);
+            Some(self.submitted_registry_version())
+        } else {
+            None
         }
     }
 
