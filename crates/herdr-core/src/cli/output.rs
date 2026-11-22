@@ -284,11 +284,12 @@ pub(super) fn describe(t: &Value) -> String {
 }
 
 /// An exec's output as the program wrote it, then its exit code as ours.
-pub(super) fn exec_out(r: &Value) -> ! {
-    use std::io::Write;
+pub(super) fn exec_out(r: &Value) -> Result<Option<Out>, RpcError> {
     let bytes = |key: &str| crate::put::decode(r[key].as_str().unwrap_or_default()).unwrap_or_default();
-    let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
-    let _ = out.write_all(&bytes("stdout")).and_then(|_| out.flush());
+    if !stdout::write_bytes(&bytes("stdout"))? {
+        return Ok(None);
+    }
+    let mut err = std::io::stderr();
     let _ = err.write_all(&bytes("stderr"));
     if r["truncated"] == true {
         let _ = writeln!(err, "[hc] output cut: kept the first 8 MB of stdout, 1 MB of stderr");

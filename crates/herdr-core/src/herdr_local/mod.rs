@@ -1,2 +1,3 @@
 pub mod recovery;
 pub(crate) mod remote_reply;
+pub(crate) mod stdout;

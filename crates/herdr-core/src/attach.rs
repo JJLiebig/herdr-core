@@ -3,6 +3,7 @@
 
 use crate::client;
 use crate::config::DetachKey;
+use crate::herdr_local::stdout;
 use crate::paths::Paths;
 use crate::rpc::RpcError;
 use crate::viewers::Display;
@@ -164,7 +165,7 @@ fn parse_rgb(body: &[u8]) -> Option<String> {
     Some(format!("#{:02x}{:02x}{:02x}", byte(r)?, byte(g)?, byte(b)?))
 }
 
-pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Result<String, RpcError> {
+pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Result<Option<String>, RpcError> {
     use std::io::IsTerminal;
     let detach_key = crate::config::load(&paths.config)?.detach_key()?;
     let tty = std::io::stdin().is_terminal();
@@ -176,7 +177,9 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
     let mut facts = Display::default();
     let mut early = Vec::new();
     if tty {
-        out(ASK_DISPLAY);
+        if !stdout::check(stdout::write_raw(ASK_DISPLAY))? {
+            return Ok(None);
+        }
         let deadline = Instant::now() + Duration::from_millis(500);
         let mut carry = Vec::new();
         while Instant::now() < deadline {
@@ -227,8 +230,9 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
         early_frames.push((ch, kind, payload));
     };
     let address = terminal.to_string();
-    if tty {
-        out(b"\x1b[?1004h"); // focus reports: switching back to this window makes it the active viewer
+    // Focus reports: switching back to this window makes it the active viewer.
+    if tty && !stdout::check(stdout::write_raw(b"\x1b[?1004h"))? {
+        return Ok(None);
     }
 
     let done = Arc::new(AtomicBool::new(false));
@@ -238,10 +242,14 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
         std::thread::spawn(move || {
             let mut frames =
                 early_frames.into_iter().map(Some).chain(std::iter::from_fn(|| Some(read_frame(&mut reader))));
+            let mut written = Ok(());
             while let Some(Some((ch, kind, payload))) = frames.next() {
                 match (ch == channel, kind) {
                     (true, wire::DATA) => {
-                        out(&shown(&payload));
+                        written = stdout::write_raw(&shown(&payload));
+                        if written.is_err() {
+                            break;
+                        }
                         send(channel, wire::CREDIT, &(payload.len() as u32).to_le_bytes());
                     }
                     (true, wire::CLOSE) => {
@@ -252,6 +260,7 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
                 }
             }
             done.store(true, Ordering::SeqCst);
+            written
         })
     };
 
@@ -260,7 +269,8 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
     let mut asking: Option<Instant> = None;
     let mut sent = facts.clone();
     let (mut pending, mut carry) = (early, Vec::new());
-    while !done.load(Ordering::SeqCst) {
+    let mut display_write = Ok(());
+    'input: while !done.load(Ordering::SeqCst) {
         // A sequence cut off at the end of a read waits for its rest; nothing
         // more within 50 ms (tmux's escape-time) means it was a lone Esc after all.
         let wait = if carry.is_empty() { 100 } else { 50 };
@@ -302,7 +312,10 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
                 input.drain(at..at + 3);
                 send(channel, wire::FOCUS, &[focused as u8]);
                 if focused && asking.is_none() {
-                    out(ASK_DISPLAY); // the theme may have changed while we were away
+                    display_write = stdout::write_raw(ASK_DISPLAY); // the theme may have changed while we were away
+                    if display_write.is_err() {
+                        break 'input;
+                    }
                     asking = Some(Instant::now());
                 }
             }
@@ -326,16 +339,17 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
     if let Ok(w) = writer.lock() {
         let _ = w.shutdown(std::net::Shutdown::Both);
     }
-    let _ = output.join();
-    if tty {
-        out(RESET);
+    let output_write = output.join().unwrap_or(Ok(()));
+    let reset_write = if tty { stdout::write_raw(RESET) } else { Ok(()) };
+    if !stdout::check(display_write.and(output_write).and(reset_write))? {
+        return Ok(None);
     }
     let ending = ending.lock().unwrap_or_else(|p| p.into_inner()).take();
-    Ok(match ending {
+    Ok(Some(match ending {
         Some(end) => format!("[{address} finished: {}]", end["reason"].as_str().unwrap_or("ended")),
         None if detached => format!("[detached from {address}]"),
         None => format!("[lost the core; it keeps {address} running: hc attach {address}]"),
-    })
+    }))
 }
 
 fn read_frame(r: &mut impl Read) -> Option<(u32, u8, Vec<u8>)> {
