@@ -5,6 +5,7 @@ use crate::api::{
     SendParams, SubscribeParams, TerminalParams, WaitParams,
 };
 use crate::client;
+use crate::herdr_local::stdout;
 use crate::paths::Paths;
 use crate::picker;
 use crate::rpc::RpcError;
@@ -135,26 +136,21 @@ pub fn main() -> i32 {
     let daemon = crate::platform::daemon_startup();
     client::remember_exe();
     let args: Vec<_> = if daemon { vec!["serve".into()] } else { std::env::args_os().skip(1).collect() };
-    match args.iter().map(|a| a.to_str()).collect::<Vec<_>>().as_slice() {
-        [Some("--help" | "-h" | "help")] => {
-            print!("{HELP}");
-            return 0;
-        }
-        [Some("--skill")] => {
-            print!("{SKILL}");
-            return 0;
-        }
-        [Some("--licenses")] => {
-            print!("{}", include_str!("../THIRD-PARTY-NOTICES"));
-            return 0;
-        }
-        _ => {}
+    let text = match args.iter().map(|a| a.to_str()).collect::<Vec<_>>().as_slice() {
+        [Some("--help" | "-h" | "help")] => Some(HELP),
+        [Some("--skill")] => Some(SKILL),
+        [Some("--licenses")] => Some(include_str!("../THIRD-PARTY-NOTICES")),
+        _ => None,
+    };
+    if let Some(text) = text {
+        return stdout_exit(stdout::write_bytes(text.as_bytes()), false);
     }
     // Before parsing we can only guess (for how to print a parse error).
     let piped = !std::io::stdout().is_terminal();
     let cli = match Cli::try_parse_from(std::env::args_os().take(1).chain(args.iter().cloned())) {
         Ok(cli) => cli,
-        Err(e) if !e.use_stderr() || !(piped || args.iter().any(|a| a == "--json")) => e.exit(),
+        Err(e) if !e.use_stderr() => return stdout_exit(stdout::print_clap(&e), false),
+        Err(e) if !(piped || args.iter().any(|a| a == "--json")) => e.exit(),
         Err(e) => return fail(&RpcError::new("usage", usage_message(&e), "see `hc --help`"), true),
     };
     // A template's trailing flags may include --json: parse them before choosing how to print.
@@ -167,10 +163,7 @@ pub fn main() -> i32 {
     };
     let json = asked || piped;
     match run(cmd, json, asked) {
-        Ok(Some(out)) => {
-            print(&out, json);
-            0
-        }
+        Ok(Some(out)) => stdout_exit(print(&out, json), json),
         Ok(None) => 0,
         Err(err) => fail(&err, json),
     }
@@ -191,24 +184,29 @@ struct Out {
     human: String,
 }
 
-fn print(out: &Out, json: bool) {
+fn print(out: &Out, json: bool) -> Result<bool, RpcError> {
     if json {
-        println!("{}", out.json);
+        stdout::write_fmt(format_args!("{}\n", out.json))
     } else {
-        println!("{}", out.human);
+        stdout::write_fmt(format_args!("{}\n", out.human))
     }
 }
 
+fn stdout_exit(result: Result<bool, RpcError>, json: bool) -> i32 {
+    result.map_or_else(|err| fail(&err, json), |_| 0)
+}
+
 fn fail(err: &RpcError, json: bool) -> i32 {
+    let mut stderr = std::io::stderr().lock();
     if err.kind == "cancelled" {
         // Esc in the picker: nothing to report.
     } else if json {
         let body = json!({"error": {"kind": err.kind, "message": err.message, "hint": err.hint}});
-        eprintln!("{body}");
+        let _ = writeln!(stderr, "{body}");
     } else {
-        eprintln!("error: {}", err.message);
+        let _ = writeln!(stderr, "error: {}", err.message);
         if !err.hint.is_empty() {
-            eprintln!("hint: {}", err.hint);
+            let _ = writeln!(stderr, "hint: {}", err.hint);
         }
     }
     err.exit_code()
@@ -309,7 +307,9 @@ fn bare(paths: &Paths, json: bool) -> Result<Option<Out>, RpcError> {
     } else {
         chosen
     };
-    eprintln!("{}", crate::attach::run(paths, &address, false, 0)?);
+    if let Some(message) = crate::attach::run(paths, &address, false, 0)? {
+        eprintln!("{message}");
+    }
     Ok(None)
 }
 
@@ -339,8 +339,9 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             return Ok(None);
         }
         Cmd::Attach(p) => {
-            let message = crate::attach::run(&paths, &pick(p.terminal)?, p.observe, p.history)?;
-            eprintln!("{message}");
+            if let Some(message) = crate::attach::run(&paths, &pick(p.terminal)?, p.observe, p.history)? {
+                eprintln!("{message}");
+            }
             return Ok(None);
         }
         Cmd::Wait(mut p) => {
@@ -478,7 +479,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             }
             // Its output is text: plain even when piped, JSON only when asked.
             if !asked {
-                println!("{human}");
+                stdout::write_fmt(format_args!("{human}\n"))?;
                 return Ok(None);
             }
             Out { json: r, human }
@@ -503,7 +504,7 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             }
             let r = call("machine.exec", to(&p))?;
             if !asked {
-                exec_out(&r);
+                return exec_out(&r);
             }
             Out { json: r, human: String::new() }
         }
@@ -671,35 +672,41 @@ fn follow_events(paths: &Paths, params: Value, json: bool) -> Result<(), RpcErro
     use std::io::BufRead;
     let stream = client::connect_or_start(paths)?;
     let snapshot = client::call(&stream, "events.subscribe", params)?;
-    if json {
-        println!("{snapshot}");
+    let written = if json {
+        stdout::write_fmt(format_args!("{snapshot}\n"))
     } else {
-        println!("{}", table(&json!({"terminals": snapshot["terminals"]})));
+        stdout::write_fmt(format_args!("{}\n", table(&json!({"terminals": snapshot["terminals"]}))))
+    }?;
+    if !written {
+        return Ok(());
     }
     for line in std::io::BufReader::new(&stream).lines() {
         let Ok(line) = line else { break };
-        if json {
-            println!("{line}");
-            continue;
-        }
-        let msg: Value = serde_json::from_str(&line).unwrap_or_default();
-        let p = &msg["params"];
-        match msg["method"].as_str() {
-            Some("event") if p["type"] == "doc" => {
-                let name = p["data"]["name"].as_str().unwrap_or("?");
-                let machine = p["machine"].as_str().map(|m| format!("{m}/")).unwrap_or_default();
-                println!("{machine}{name}  doc  version {}", p["data"]["version"]);
+        let line = if json {
+            line
+        } else {
+            let msg: Value = serde_json::from_str(&line).unwrap_or_default();
+            let p = &msg["params"];
+            match msg["method"].as_str() {
+                Some("event") if p["type"] == "doc" => {
+                    let name = p["data"]["name"].as_str().unwrap_or("?");
+                    let machine = p["machine"].as_str().map(|m| format!("{m}/")).unwrap_or_default();
+                    format!("{machine}{name}  doc  version {}", p["data"]["version"])
+                }
+                Some("event") => format!(
+                    "{:<6} {:<10} {}",
+                    p["terminal"].as_str().unwrap_or("?"),
+                    p["type"].as_str().unwrap_or("?"),
+                    p["data"]
+                ),
+                Some("missed") => {
+                    format!("[missed some events; {} terminals now]", p["terminals"].as_array().map_or(0, Vec::len))
+                }
+                _ => continue,
             }
-            Some("event") => println!(
-                "{:<6} {:<10} {}",
-                p["terminal"].as_str().unwrap_or("?"),
-                p["type"].as_str().unwrap_or("?"),
-                p["data"]
-            ),
-            Some("missed") => {
-                println!("[missed some events; {} terminals now]", p["terminals"].as_array().map_or(0, Vec::len))
-            }
-            _ => {}
+        };
+        if !stdout::write_fmt(format_args!("{line}\n"))? {
+            break;
         }
     }
     Ok(())
@@ -721,12 +728,10 @@ fn connect(paths: &Paths) -> Result<(), RpcError> {
             let _ = to_core.shutdown(std::net::Shutdown::Write);
         }
     });
-    // Unbuffered: std's stdout holds bytes until a newline, and frames have none.
-    let mut out = crate::platform::console::stdout();
     let mut buf = [0u8; 64 * 1024];
     let mut counting = true;
     while let Ok(n @ 1..) = (&stream).read(&mut buf) {
-        if std::io::Write::write_all(&mut *out, &buf[..n]).is_err() {
+        if !stdout::check(stdout::write_raw(&buf[..n]))? {
             break;
         }
         let mut owed = owed.lock().unwrap();

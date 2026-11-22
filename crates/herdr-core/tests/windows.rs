@@ -1257,6 +1257,9 @@ mod recovery;
 #[path = "herdr_local/windows_startup.rs"]
 mod startup;
 
+#[path = "herdr_local/windows_stdout.rs"]
+mod stdout;
+
 #[test]
 fn a_lost_kept_terminal_shows_what_its_program_left_above_the_new_shell() {
     let s = Session::new();

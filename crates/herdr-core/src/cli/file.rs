@@ -47,8 +47,9 @@ pub(super) fn file(
                 return Ok(Some(Out { json: r, human: String::new() }));
             }
             // Text, even when piped, as `hc read` does.
-            use std::io::Write;
-            let _ = std::io::stdout().write_all(r["text"].as_str().unwrap_or_default().as_bytes());
+            if !stdout::write_bytes(r["text"].as_str().unwrap_or_default().as_bytes())? {
+                return Ok(None);
+            }
             let (first, last, lines) = (r["first"].as_u64(), r["last"].as_u64(), r["lines"].as_u64());
             if first > Some(1) || last < lines {
                 eprintln!("[hc] lines {}-{} of {}", r["first"], r["last"], r["lines"]);
