@@ -68,6 +68,49 @@ fn concurrent_commands_start_one_core() {
 }
 
 #[test]
+fn closed_stdout_pipes_end_quietly() {
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    std::fs::write(s.root.join("input.txt"), "first\nsecond").unwrap();
+    let viewer = s.json(&["run", "--bg", "cat"]);
+    let terminal = viewer["address"].as_str().unwrap();
+
+    for args in [
+        &["server", "status", "--json"][..],
+        &["--help"],
+        &["run", "--help"],
+        &["events"],
+        &["file", "read", "input.txt", "--offset", "2", "--limit", "1"],
+        &["read", terminal, "--lines", "0"],
+        &["run", "sh", "-c", "printf output; exit 7"],
+        &["exec", "sh", "-c", "printf output; exit 7"],
+        &["attach", terminal, "--observe"],
+    ] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let out = s.cmd().current_dir(&s.root).args(args).stdout(writer).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "hc {args:?}: {stderr}");
+        assert!(out.stderr.is_empty(), "hc {args:?}: {stderr}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn other_stdout_errors_are_reported() {
+    let s = Session::new();
+    s.json(&["server", "start"]);
+    std::fs::write(s.root.join("input.txt"), "no newline").unwrap();
+    let stdout = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+    let out = s.cmd().current_dir(&s.root).args(["file", "read", "input.txt"]).stdout(stdout).output().unwrap();
+
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+    assert_eq!(error["error"]["kind"], "internal");
+    assert!(error["error"]["message"].as_str().unwrap().contains("stdout"), "{error}");
+}
+
+#[test]
 fn plain_mode_speaks_json_rpc_lines() {
     let s = Session::new();
     s.json(&["server", "start"]);

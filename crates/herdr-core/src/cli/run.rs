@@ -68,13 +68,12 @@ fn trailing_flags(paths: &Paths, argv: &[String]) -> Result<Option<(RunParams, b
 /// A run that waited: its output as text (like read), a last line when there
 /// is more to say, and the program's exit code as hc's (124: still running).
 pub(super) fn ran(r: &Value) -> Result<Option<Out>, RpcError> {
-    use std::io::Write;
     let t = r["address"].as_str().unwrap_or("?");
     // An older hc (on another machine) ignores the wait: it only started it.
     if r.get("wait").is_none() {
         let fix = t.split_once('/').map(|(m, _)| format!(": hc machine update {m}")).unwrap_or_default();
-        println!("[hc] started as {t}, not waited on: that hc is older{fix}");
-        std::process::exit(0);
+        stdout::write_fmt(format_args!("[hc] started as {t}, not waited on: that hc is older{fix}\n"))?;
+        return Ok(None);
     }
     let w = &r["wait"];
     let status = w["status"].as_str().unwrap_or("no status");
@@ -96,7 +95,8 @@ pub(super) fn ran(r: &Value) -> Result<Option<Out>, RpcError> {
     if let Some(note) = note {
         text.push_str(&format!("\n[hc] {note}"));
     }
-    let mut out = std::io::stdout();
-    let _ = writeln!(out, "{}", text.trim_start_matches('\n')).and_then(|_| out.flush());
+    if !stdout::write_fmt(format_args!("{}\n", text.trim_start_matches('\n')))? {
+        return Ok(None);
+    }
     std::process::exit(code);
 }
