@@ -420,10 +420,11 @@ shell. With none it reports the newest non-shell program that shell started.
   new launcher. On macOS, SSH versus launchd is still chosen by that launcher,
   not by the saved environment. The update from an older core to 0.1.19 takes the
   updater's environment once: older cores can't write the note for their successor.
-- On Unix, program exit, `hc kill`, pane close and `hc server stop` sweep the
-  ended program's inherited cleanup scope, including detached jobs. A separate
-  core started from a terminal keeps running. Child terminals end with their
-  parent unless started with `--outlive-parent`.
+- On Unix, program exit, `hc kill`, pane close and `hc server stop` queue
+  background cleanup of processes the core can identify by the ended program's
+  scope, including detached jobs. A separate core started from a terminal keeps
+  running. Child terminals end with their parent unless started with
+  `--outlive-parent`.
 - Never `hc server stop` or restart the user's core unless asked. It affects
   every terminal. Tests need their own `HC_SESSION` and scratch XDG paths.
 - Errors are `{error: {kind, message, hint}}` on stderr. Exit codes include

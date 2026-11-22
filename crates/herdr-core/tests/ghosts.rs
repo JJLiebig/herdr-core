@@ -55,6 +55,7 @@ fn run(s: &Session, script: &str) -> String {
 fn with_detached_child(s: &Session, name: &str, start: impl FnOnce(&str) -> String) -> (String, UnixStream) {
     let path = s.root.join(name);
     let listener = UnixListener::bind(&path).unwrap();
+    listener.set_nonblocking(true).unwrap();
     let child = r#"
 import os, signal, socket, sys
 os.setsid()
@@ -66,7 +67,15 @@ with socket.socket(socket.AF_UNIX) as conn:
         conn.sendall(data)
 "#;
     let terminal = start(&format!("python3 -c '{child}' '{}' &", path.display()));
-    let (conn, _) = listener.accept().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let connected = runtime.block_on(async {
+        let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+        tokio::time::timeout(Duration::from_secs(15), listener.accept()).await
+    });
+    let (conn, _) =
+        connected.unwrap_or_else(|_| panic!("detached child did not connect:\n{}", text(s, &terminal))).unwrap();
+    let conn = conn.into_std().unwrap();
+    conn.set_nonblocking(false).unwrap();
     conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     (terminal, conn)
 }

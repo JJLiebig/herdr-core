@@ -37,8 +37,10 @@ pub struct Core {
     /// Work for the runtime that the holder thread can't do itself.
     pub jobs: tokio::sync::mpsc::UnboundedSender<crate::notes::Job>,
     pub jobs_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::notes::Job>>>,
-    /// Terminal scope sweeps in flight: stop and restart wait for them.
+    /// Sweeps of lost terminals in flight: stop and restart wait for them.
     pub(crate) sweeps: Arc<std::sync::atomic::AtomicUsize>,
+    /// Scopes being swept after a confirmed program exit.
+    normal_sweeps: Arc<Mutex<HashSet<String>>>,
     /// Holder startup and goodbye cannot cross, or a stop could leave a new holder behind.
     holder_start: Mutex<()>,
     /// The registry changed in a way a crash may lose: `save_soon` writes it shortly.
@@ -200,6 +202,7 @@ impl Core {
             jobs,
             jobs_rx: Mutex::new(Some(jobs_rx)),
             sweeps: Default::default(),
+            normal_sweeps: Default::default(),
             holder_start: Default::default(),
             dirty: Default::default(),
             save_due: Notify::new(),
@@ -951,7 +954,7 @@ impl Core {
         }
     }
 
-    /// Stop and restart wait for this cleanup. Tokens identify each program's scope.
+    /// Cleanup after holder loss. Stop and restart wait for it.
     fn sweep_in_background(&self, scopes: Vec<String>) {
         if scopes.is_empty() {
             return;
@@ -966,7 +969,9 @@ impl Core {
 
     fn wait_for_sweeps(&self) {
         let deadline = Instant::now() + Duration::from_secs(6);
-        while self.sweeps.load(std::sync::atomic::Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        while (self.sweeps.load(std::sync::atomic::Ordering::SeqCst) > 0 || self.normal_sweeps_pending())
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(25));
         }
     }

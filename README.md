@@ -123,10 +123,10 @@ Use `hc wait --children messages` to ignore ordinary turn ends and wait for
 reports, blocked/error news, or exit instead.
 The parent gets notes when a child needs attention or ends.
 Children end with their parent unless started with `--outlive-parent`.
-Normal program exit, closing the terminal, `hc kill`, and stopping the server
-all end detached jobs the terminal started. That includes `nohup` jobs, `setsid`
-jobs, and background servers. A separate Herdr core started from that terminal
-keeps running.
+On terminal exit, close, `hc kill`, or server stop, Herdr runs background
+cleanup for detached jobs it can still identify as part of the terminal.
+This includes `nohup` jobs, `setsid` jobs, and background servers. A separate
+Herdr core started from the terminal keeps running.
 
 ## Every machine
 

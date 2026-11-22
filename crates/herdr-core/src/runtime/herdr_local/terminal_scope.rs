@@ -9,7 +9,21 @@ impl Core {
             && terminal.is_live()
             && let Some(scope) = &terminal.scope
         {
-            self.sweep_in_background(vec![scope.clone()]);
+            let scope = scope.clone();
+            let pending = self.normal_sweeps.clone();
+            pending.lock().unwrap().insert(scope.clone());
+            std::thread::spawn(move || {
+                crate::sweep::sweep(std::slice::from_ref(&scope));
+                pending.lock().unwrap().remove(&scope);
+            });
         }
+    }
+
+    pub(crate) fn normal_sweep_pending(&self, terminal: &Terminal) -> bool {
+        terminal.scope.as_ref().is_some_and(|scope| self.normal_sweeps.lock().unwrap().contains(scope))
+    }
+
+    pub(super) fn normal_sweeps_pending(&self) -> bool {
+        !self.normal_sweeps.lock().unwrap().is_empty()
     }
 }
