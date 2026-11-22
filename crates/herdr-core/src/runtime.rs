@@ -20,6 +20,9 @@ use tokio::sync::{Notify, oneshot};
 mod persistence;
 use persistence::RegistryWriter;
 
+#[path = "runtime/herdr_local/terminal_scope.rs"]
+mod terminal_scope;
+
 pub struct Core {
     pub info: CoreInfo,
     pub login_session: Option<platform::LoginSession>,
@@ -34,7 +37,7 @@ pub struct Core {
     /// Work for the runtime that the holder thread can't do itself.
     pub jobs: tokio::sync::mpsc::UnboundedSender<crate::notes::Job>,
     pub jobs_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::notes::Job>>>,
-    /// Sweeps of lost terminals in flight: stop and restart wait for them.
+    /// Terminal scope sweeps in flight: stop and restart wait for them.
     pub(crate) sweeps: Arc<std::sync::atomic::AtomicUsize>,
     /// Holder startup and goodbye cannot cross, or a stop could leave a new holder behind.
     holder_start: Mutex<()>,
@@ -756,6 +759,7 @@ impl Core {
         let reason = finish_reason(st.killing.contains(&id), st.stopping, platform::host_shutdown_in_progress());
         if let Some(link) = st.link(id) {
             link.send(&proto::frame(proto::RELEASE, id, &[]));
+            self.sweep_ended_terminal(&st.reg.terminals[&id]);
         }
         self.record_finish(st, id, exit, reason);
         self.save(st);
@@ -947,8 +951,7 @@ impl Core {
         }
     }
 
-    /// Crash-only cleanup after losing a holder, never a normal terminal end.
-    /// Stop and restart wait for it. Tokens avoid signaling reused session IDs.
+    /// Stop and restart wait for this cleanup. Tokens identify each program's scope.
     fn sweep_in_background(&self, scopes: Vec<String>) {
         if scopes.is_empty() {
             return;
