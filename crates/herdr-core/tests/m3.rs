@@ -198,7 +198,8 @@ fn a_core_crash_does_not_count_old_turns_twice() {
     let t = run(&s, &["sh", "-c", &script(&s, "r state=working; w a; r state=done; sleep 100")]);
     wait_status(&s, &t, "working");
     touch(&s, "a");
-    let done = wait_status(&s, &t, "done");
+    assert_eq!(s.json(&["wait", &t])["status"], "done");
+    let done = get(&s, &t);
     assert_eq!(done["turn"], 1);
     assert!(done["status_ms"].as_u64().unwrap() >= done["created_ms"].as_u64().unwrap());
     let core = s.json(&["server", "status"])["pid"].as_i64().unwrap();
