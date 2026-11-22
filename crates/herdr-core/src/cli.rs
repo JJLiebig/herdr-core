@@ -149,10 +149,7 @@ pub fn main() -> i32 {
     let piped = !std::io::stdout().is_terminal();
     let cli = match Cli::try_parse_from(std::env::args_os().take(1).chain(args.iter().cloned())) {
         Ok(cli) => cli,
-        Err(e) if !e.use_stderr() => {
-            let result = e.print().and_then(|()| std::io::stdout().flush());
-            return stdout_exit(stdout::check(result), false);
-        }
+        Err(e) if !e.use_stderr() => return stdout_exit(stdout::print_clap(&e), false),
         Err(e) if !(piped || args.iter().any(|a| a == "--json")) => e.exit(),
         Err(e) => return fail(&RpcError::new("usage", usage_message(&e), "see `hc --help`"), true),
     };

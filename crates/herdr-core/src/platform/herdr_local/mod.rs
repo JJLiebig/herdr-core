@@ -1,4 +1,6 @@
 //! Private fork: print a recovery notice inside the PTY before starting its shell.
+pub(crate) mod stdout;
+
 #[cfg(windows)]
 pub(super) const NOTICE_ENV: &str = "HC_RECOVERY_NOTICE";
 

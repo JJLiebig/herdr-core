@@ -95,6 +95,18 @@ fn closed_stdout_pipes_end_quietly() {
     }
 }
 
+#[test]
+fn read_only_stdout_is_a_reported_error() {
+    let s = Session::new();
+    for args in [&["--help"][..], &["run", "--help"]] {
+        let stdout = std::fs::File::open("/dev/null").unwrap();
+        let out = s.cmd().args(args).stdout(stdout).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "hc {args:?}: {stderr}");
+        assert!(stderr.contains("stdout"), "hc {args:?}: {stderr}");
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn other_stdout_errors_are_reported() {
