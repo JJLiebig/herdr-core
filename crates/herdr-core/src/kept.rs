@@ -81,7 +81,13 @@ impl Core {
             .reg
             .terminals
             .values()
-            .filter(|t| t.is_live() && t.keep && t.holder.is_none() && (startup || t.restart_after_ms <= now_ms()))
+            .filter(|t| {
+                t.is_live()
+                    && t.keep
+                    && t.holder.is_none()
+                    && (startup || t.restart_after_ms <= now_ms())
+                    && !self.normal_sweep_pending(t)
+            })
             .map(|t| t.id())
             .collect();
         for id in ids {

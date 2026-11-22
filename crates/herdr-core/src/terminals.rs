@@ -127,7 +127,7 @@ pub struct Terminal {
     /// viewer must hear it too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub win32_input: bool,
-    /// Crash-only cleanup token: used if its holder is lost, never on a normal end.
+    /// Cleanup token for the current program and its descendants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(default)]

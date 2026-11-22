@@ -20,6 +20,9 @@ use tokio::sync::{Notify, oneshot};
 mod persistence;
 use persistence::RegistryWriter;
 
+#[path = "runtime/herdr_local/terminal_scope.rs"]
+mod terminal_scope;
+
 pub struct Core {
     pub info: CoreInfo,
     pub login_session: Option<platform::LoginSession>,
@@ -36,6 +39,8 @@ pub struct Core {
     pub jobs_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::notes::Job>>>,
     /// Sweeps of lost terminals in flight: stop and restart wait for them.
     pub(crate) sweeps: Arc<std::sync::atomic::AtomicUsize>,
+    /// Scopes being swept after a confirmed program exit.
+    normal_sweeps: Arc<Mutex<HashSet<String>>>,
     /// Holder startup and goodbye cannot cross, or a stop could leave a new holder behind.
     holder_start: Mutex<()>,
     /// The registry changed in a way a crash may lose: `save_soon` writes it shortly.
@@ -197,6 +202,7 @@ impl Core {
             jobs,
             jobs_rx: Mutex::new(Some(jobs_rx)),
             sweeps: Default::default(),
+            normal_sweeps: Default::default(),
             holder_start: Default::default(),
             dirty: Default::default(),
             save_due: Notify::new(),
@@ -756,6 +762,7 @@ impl Core {
         let reason = finish_reason(st.killing.contains(&id), st.stopping, platform::host_shutdown_in_progress());
         if let Some(link) = st.link(id) {
             link.send(&proto::frame(proto::RELEASE, id, &[]));
+            self.sweep_ended_terminal(&st.reg.terminals[&id]);
         }
         self.record_finish(st, id, exit, reason);
         self.save(st);
@@ -947,8 +954,7 @@ impl Core {
         }
     }
 
-    /// Crash-only cleanup after losing a holder, never a normal terminal end.
-    /// Stop and restart wait for it. Tokens avoid signaling reused session IDs.
+    /// Cleanup after holder loss. Stop and restart wait for it.
     fn sweep_in_background(&self, scopes: Vec<String>) {
         if scopes.is_empty() {
             return;
@@ -963,7 +969,9 @@ impl Core {
 
     fn wait_for_sweeps(&self) {
         let deadline = Instant::now() + Duration::from_secs(6);
-        while self.sweeps.load(std::sync::atomic::Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        while (self.sweeps.load(std::sync::atomic::Ordering::SeqCst) > 0 || self.normal_sweeps_pending())
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(25));
         }
     }

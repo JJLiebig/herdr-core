@@ -62,6 +62,11 @@ pub fn foreground_tracks_jobs() -> bool {
     cfg!(unix)
 }
 
+/// Windows job objects already end detached descendants.
+pub(crate) fn needs_terminal_scope_sweep() -> bool {
+    cfg!(unix)
+}
+
 /// Run before threads or runtime setup: a launchd launcher forks the core here.
 pub fn daemon_startup() -> bool {
     #[cfg(target_os = "macos")]

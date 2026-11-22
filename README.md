@@ -123,13 +123,10 @@ Use `hc wait --children messages` to ignore ordinary turn ends and wait for
 reports, blocked/error news, or exit instead.
 The parent gets notes when a child needs attention or ends.
 Children end with their parent unless started with `--outlive-parent`.
-On Unix, ending a terminal hangs up its program and foreground job, rather than
-hunting down detached programs. Programs deliberately detached with `nohup` or
-`setsid` can keep running, including background servers (their ports stay busy).
-An unexpected holder loss still uses inherited cleanup tokens to end abandoned
-programs, including detached ones. Windows keeps its job-object cleanup.
-Terminals kept alive through an update retain their old holder's behavior until
-recreated.
+On terminal exit, close, `hc kill`, or server stop, Herdr runs background
+cleanup for detached jobs it can still identify as part of the terminal.
+This includes `nohup` jobs, `setsid` jobs, and background servers. A separate
+Herdr core started from the terminal keeps running.
 
 ## Every machine
 

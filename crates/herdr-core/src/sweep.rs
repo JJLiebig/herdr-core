@@ -1,5 +1,5 @@
-//! Cleanup for exec requests and terminals abandoned by a lost holder, never
-//! normal terminal ends. Inherited tokens find even detached descendants.
+//! Cleanup for exec requests and ended terminals.
+//! Inherited tokens find even detached descendants.
 //! A process that leaves the session and drops its environment escapes.
 
 #[cfg(unix)]
