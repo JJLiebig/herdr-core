@@ -99,7 +99,15 @@ impl RegistryWriter {
 
     /// Wait for the current snapshot, not for unrelated future saves. Never hold the core lock.
     pub async fn flush(&self) -> io::Result<()> {
-        let version = self.queue.0.lock().unwrap().submitted;
+        self.flush_through(self.submitted()).await
+    }
+
+    pub(super) fn submitted(&self) -> u64 {
+        self.queue.0.lock().unwrap().submitted
+    }
+
+    /// A newer snapshot can include this version's changes if pending saves coalesced.
+    pub(super) async fn flush_through(&self, version: u64) -> io::Result<()> {
         let mut completed = self.completed.clone();
         completed
             .wait_for(|written| *written >= version)

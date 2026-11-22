@@ -1,5 +1,7 @@
 use super::*;
 use serde_json::{Value, json};
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
 
 #[tokio::test(start_paused = true)]
 async fn expiring_an_ended_terminals_image_wait_does_not_recreate_its_gate() {
@@ -402,6 +404,126 @@ fn test_core() -> (Arc<Core>, PathBuf) {
     paths.create_dirs().unwrap();
     let core = Core::start(paths, CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
     (core, root)
+}
+
+fn block_registry_writer(core: &mut Arc<Core>) -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
+    let path = core.paths.state.join("terminals.json");
+    let (started, writes) = mpsc::channel();
+    let (release, blocked) = mpsc::channel();
+    Arc::get_mut(core).unwrap().registry_writer = RegistryWriter::start(move |bytes| {
+        let _ = started.send(());
+        let _ = blocked.recv();
+        write_atomic(&path, bytes)
+    })
+    .unwrap();
+    (release, writes)
+}
+
+#[tokio::test]
+async fn terminal_reads_skip_unrelated_registry_writes() {
+    use crate::terminals::{NewTerminal, address};
+
+    let (mut core, root) = test_core();
+    let (release, writes) = block_registry_writer(&mut core);
+    let (parent, child) = {
+        let mut st = core.lock();
+        let parent = st.reg.create(NewTerminal { argv: vec!["sh".into()], ..Default::default() }, now_ms()).unwrap();
+        let child = st
+            .reg
+            .create(
+                NewTerminal { argv: vec!["sh".into()], parent: Some(address(parent)), ..Default::default() },
+                now_ms(),
+            )
+            .unwrap();
+        st.reg.finish(child, Some(0), None, "exited", now_ms());
+        core.news(&mut st, child);
+        core.save(&st);
+        (parent, child)
+    };
+    writes.recv().unwrap();
+    {
+        let call = crate::api::Call { core: &core, conn: None, plain: None };
+        let mut cx = Context::from_waker(Waker::noop());
+        let get = json!({"terminal": address(child)});
+        let list = pin!(crate::api::dispatch(&call, "terminal.list", json!({"all": true}))).poll(&mut cx);
+        let lookup = pin!(crate::api::dispatch(&call, "terminal.get", get.clone())).poll(&mut cx);
+        let (Poll::Ready(Ok(list)), Poll::Ready(Ok(lookup))) = (&list, &lookup) else {
+            panic!("reads must answer with the writer blocked: list={list:?}, get={lookup:?}");
+        };
+        assert!(list["terminals"].as_array().unwrap().iter().any(|t| t["address"] == address(child)));
+        assert_eq!(lookup["address"], address(child));
+
+        let mut from_parent = get;
+        from_parent["caller"] = address(parent).into();
+        let mut acknowledge = pin!(crate::api::dispatch(&call, "terminal.get", from_parent.clone()));
+        assert!(acknowledge.as_mut().poll(&mut cx).is_pending());
+        release.send(()).unwrap();
+        writes.recv().unwrap();
+        assert!(acknowledge.as_mut().poll(&mut cx).is_pending(), "the acknowledgement must reach disk");
+        assert!(matches!(
+            pin!(crate::api::dispatch(&call, "terminal.get", from_parent)).poll(&mut cx),
+            Poll::Ready(Ok(_))
+        ));
+        release.send(()).unwrap();
+        assert_eq!(acknowledge.await.unwrap()["address"], address(child));
+    }
+    let saved: Registry = read_state(&core.paths.state.join("terminals.json")).unwrap();
+    assert_eq!(saved.terminals[&child].seen, 1);
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_reads_wait_for_pruning_and_skip_later_writes() {
+    use crate::terminals::NewTerminal;
+
+    let (mut core, root) = test_core();
+    let (release, writes) = block_registry_writer(&mut core);
+    let new = || NewTerminal { argv: vec!["sh".into()], ..Default::default() };
+    let expired = {
+        let mut st = core.lock();
+        let expired = st.reg.create(new(), 0).unwrap();
+        st.reg.finish(expired, Some(0), None, "exited", 0);
+        st.machines.push(
+            serde_json::from_value(
+                json!({"name": "away", "target": "away", "id": "away", "host": "away", "version": "test"}),
+            )
+            .unwrap(),
+        );
+        st.lines.insert("away".into(), crate::remote::LineState::Connecting);
+        core.save(&st);
+        expired
+    };
+    writes.recv().unwrap();
+    let reply = {
+        let call = crate::api::Call { core: &core, conn: None, plain: None };
+        let mut list = pin!(crate::api::dispatch(&call, "terminal.list", json!({"all": true})));
+        assert!(list.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        assert!(!core.lock().reg.terminals.contains_key(&expired));
+        release.send(()).unwrap();
+        writes.recv().unwrap();
+
+        // Queue another save before the remote list lookup can finish.
+        {
+            let mut st = core.lock();
+            st.reg.create(new(), now_ms()).unwrap();
+            core.save(&st);
+            st.lines.remove("away");
+        }
+        core.changed.notify_waiters();
+        assert!(tokio::time::timeout(Duration::from_secs(1), &mut list).await.is_err(), "pruning must reach disk");
+
+        release.send(()).unwrap();
+        writes.recv().unwrap();
+        let reply = list.await;
+        let saved: Registry = read_state(&core.paths.state.join("terminals.json")).unwrap();
+        assert!(saved.terminals.is_empty(), "the prune reached disk and the later save is still blocked");
+        reply
+    };
+    release.send(()).unwrap();
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(reply.expect("list must skip the later save")["terminals"], json!([]));
 }
 
 #[tokio::test]

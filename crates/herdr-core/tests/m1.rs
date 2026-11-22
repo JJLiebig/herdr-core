@@ -445,10 +445,15 @@ fn losing_the_holder_finishes_everything() {
 fn a_turn_that_starts_and_ends_in_one_burst_survives_losing_the_holder() {
     let s = Session::new();
     // Idle before and after: only the reports in between show the turn.
-    let burst = r"printf '\033]7501;state=idle\033\\'; sleep 0.3
-        printf '\033]7501;state=working\033\\\033]7501;state=done\033\\\033]7501;state=idle\033\\'; sleep 100";
+    let burst = r"printf '\033]7501;state=idle\033\\'; IFS= read -r line
+        printf '\033]7501;state=working\033\\\033]7501;state=done\033\\\033]7501;state=idle\033\\'; IFS= read -r line";
     let t = run(&s, &["sh", "-c", burst]);
-    wait_until("the turn", || get(&s, &t)["turn"] == 1);
+    let mut events = s.connect();
+    events.call(1, "events.subscribe", serde_json::json!({"terminal": t}));
+    s.json(&["keys", &t, "Enter"]);
+    next_event(&mut events, |e| e["params"]["type"] == "turn" && e["params"]["data"]["turn"] == 1);
+    // The wait's reply includes the completed turn after its registry save.
+    assert_eq!(s.json(&["wait", &t])["turn"], 1);
     let (core, holder) = (status(&s)["pid"].as_i64().unwrap(), holder_pid(&s));
     kill9(core);
     kill9(holder);
