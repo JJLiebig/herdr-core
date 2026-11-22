@@ -1,11 +1,12 @@
-//! Normal terminal ends spare detached programs; losing the holder still
-//! cleans up its abandoned programs, including those ignoring hangup.
+//! Terminal cleanup on a normal end or after losing a holder.
 
 #![cfg(unix)] // Windows: tests/windows.rs
 
 mod common;
 
 use common::*;
+use std::io::{Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
 /// A Python process that ignores hangup (and with `term`, terminate too),
@@ -50,50 +51,74 @@ fn run(s: &Session, script: &str) -> String {
     s.json(&["run", "--bg", "sh", "-c", script])["address"].as_str().unwrap().to_string()
 }
 
-#[test]
-fn kill_spares_programs_that_ignore_hangup() {
-    let s = Session::new();
-    let script = format!("{} {} sleep 300", stubborn(&s, "same", false), stubborn(&s, "detached", true));
-    let t = run(&s, &script);
-    let pids = started(&s, &["same", "detached"]);
-    let survivors = Survivors(pids);
-    s.json(&["kill", &t]);
-    assert!(survivors.0.iter().all(|p| running(*p)), "a detached program was killed");
+/// The detached child echoes on its socket until it is killed or the test drops the connection.
+fn with_detached_child(s: &Session, name: &str, start: impl FnOnce(&str) -> String) -> (String, UnixStream) {
+    let path = s.root.join(name);
+    let listener = UnixListener::bind(&path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let child = r#"
+import os, signal, socket, sys
+os.setsid()
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with socket.socket(socket.AF_UNIX) as conn:
+    conn.connect(sys.argv[1])
+    while data := conn.recv(1):
+        conn.sendall(data)
+"#;
+    let terminal = start(&format!("python3 -c '{child}' '{}' &", path.display()));
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let connected = runtime.block_on(async {
+        let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+        tokio::time::timeout(Duration::from_secs(15), listener.accept()).await
+    });
+    let (conn, _) =
+        connected.unwrap_or_else(|_| panic!("detached child did not connect:\n{}", text(s, &terminal))).unwrap();
+    let conn = conn.into_std().unwrap();
+    conn.set_nonblocking(false).unwrap();
+    conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    (terminal, conn)
+}
+
+fn child_ended(mut conn: UnixStream) {
+    assert_eq!(conn.read(&mut [0]).expect("the detached child should close its socket within the sweep window"), 0);
+}
+
+fn child_still_running(mut conn: &UnixStream) {
+    conn.write_all(b"x").unwrap();
+    let mut echo = [0];
+    conn.read_exact(&mut echo).expect("the detached child should still respond");
+    assert_eq!(&echo, b"x");
 }
 
 #[test]
-fn detached_programs_survive_a_normal_exit() {
+fn normal_ends_sweep_only_the_ended_terminals() {
     let s = Session::new();
-    let script = format!("{} {} sleep 0.3", stubborn(&s, "same", false), stubborn(&s, "detached", true));
-    let t = run(&s, &script);
-    let pids = started(&s, &["same", "detached"]);
-    let survivors = Survivors(pids);
-    wait_until("finished", || s.json(&["get", &t])["state"] == "finished");
-    assert!(survivors.0.iter().all(|p| running(*p)), "a detached program was killed");
-}
+    let start = |child: &str| run(&s, &format!("{child} read -r go"));
+    let (killed, killed_child) = with_detached_child(&s, "killed.sock", start);
+    let (exiting, exiting_child) = with_detached_child(&s, "exiting.sock", start);
 
-struct Survivors(Vec<i64>);
+    assert_eq!(s.json(&["kill", &killed])["reason"], "killed");
+    child_ended(killed_child);
+    child_still_running(&exiting_child);
 
-impl Drop for Survivors {
-    fn drop(&mut self) {
-        for &pid in &self.0 {
-            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-        }
-        gone(&self.0);
-    }
+    s.json(&["keys", &exiting, "enter"]);
+    assert_eq!(s.json(&["wait", &exiting, "--timeout", "5"])["exit_code"], 0);
+    child_ended(exiting_child);
 }
 
 #[test]
-fn kept_recovery_does_not_sweep_after_a_normal_stop() {
+fn server_stop_sweeps_the_ended_program_of_a_kept_terminal() {
     let s = Session::new();
-    let script = format!("{} sleep 300", stubborn(&s, "detached", true));
-    s.json(&["run", "--bg", "--keep", "sh", "-c", &script]);
-    let survivors = Survivors(started(&s, &["detached"]));
+    let (kept, child) = with_detached_child(&s, "kept.sock", |child| {
+        s.json(&["run", "--bg", "--keep", "sh", "-c", &format!("{child} read -r go")])["address"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    });
     s.json(&["server", "stop"]);
-    assert!(survivors.0.iter().all(|p| running(*p)), "stop killed a detached program");
-    s.json(&["server", "status"]);
-    s.json(&["server", "restart"]);
-    assert!(survivors.0.iter().all(|p| running(*p)), "recovery killed a detached program");
+    child_ended(child);
+    assert_eq!(get(&s, &kept)["state"], "live");
 }
 
 #[test]
@@ -113,16 +138,21 @@ fn closing_detached_terminals_releases_the_holders_pty_masters() {
     };
     wait_until("warm PTY released", || masters() == 0);
     eprintln!("holder {holder}: before closing detached terminals, {} PTY masters", masters());
-    let mut survivors = Survivors(Vec::new());
+    let mut survivors = Vec::new();
     for i in 0..3 {
-        let file = format!("detached-{i}");
-        let t = run(&s, &format!("{} exec sleep 300", stubborn(&s, &file, true)));
-        survivors.0.extend(started(&s, &[&file]));
+        // The runtime marker keeps the child (and its open PTY) alive after the sweep.
+        let (t, child) = with_detached_child(&s, &format!("detached-{i}.sock"), |child| {
+            run(&s, &format!("HC_RUNTIME=1 {child} read -r go"))
+        });
         s.json(&["kill", &t]);
+        survivors.push(child);
     }
-    assert!(survivors.0.iter().all(|p| running(*p)), "a detached program was killed");
     wait_until("closed terminals released every PTY master", || masters() == 0);
     eprintln!("holder {holder}: after closing three detached terminals, {} PTY masters", masters());
+    s.json(&["server", "stop"]); // waits for every sweep before checking the protected processes
+    for child in &survivors {
+        child_still_running(child);
+    }
 }
 
 #[test]
@@ -194,21 +224,23 @@ fn a_holder_dying_during_stop_still_has_its_programs_ended_before_stop_returns()
 #[test]
 fn a_terminal_that_started_another_hc_session_does_not_take_it_down() {
     let s = Session::new();
-    // Ending a terminal's own job must not take down the core that job started.
-    let inner = format!("HC_SESSION=inner {} events", s.bin.display());
-    let t = run(&s, &format!("({inner}) & exec sleep 300"));
-    let mut status = s.cmd();
-    status.env("HC_SESSION", "inner").args(["server", "status"]);
-    wait_until("inner core", || status.output().unwrap().status.success());
-    let inner_core =
-        serde_json::from_slice::<serde_json::Value>(&status.output().unwrap().stdout).unwrap()["pid"].as_i64().unwrap();
+    let inner = Session::new();
+    let (t, child) = with_detached_child(&s, "inner.sock", |child| {
+        let root = inner.root.display();
+        run(
+            &s,
+            &format!(
+                "HOME='{root}' XDG_RUNTIME_DIR='{root}/run' XDG_STATE_HOME='{root}/state' \
+                 XDG_CONFIG_HOME='{root}/config' '{}' server start || exit 1; {child} read -r go",
+                inner.bin.display()
+            ),
+        )
+    });
+    let pid = || inner.connect().call(1, "server.status", serde_json::json!({}))["result"]["pid"].as_u64().unwrap();
+    let started = pid();
     s.json(&["kill", &t]);
-    std::thread::sleep(Duration::from_millis(1500));
-    let alive = running(inner_core);
-    let mut stop = s.cmd();
-    stop.env("HC_SESSION", "inner").args(["server", "stop"]);
-    stop.output().unwrap();
-    assert!(alive, "ending the terminal killed the other session's core");
+    child_ended(child);
+    assert_eq!(pid(), started, "the other session's core is still running");
 }
 
 #[test]

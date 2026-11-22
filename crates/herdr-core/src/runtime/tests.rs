@@ -527,6 +527,50 @@ async fn terminal_reads_wait_for_pruning_and_skip_later_writes() {
 }
 
 #[tokio::test]
+async fn kept_recovery_waits_for_its_own_normal_sweep() {
+    let (core, root) = test_core();
+    let (writer, frames) = mpsc::channel();
+    let (bye, _) = mpsc::channel();
+    let [ready, waiting] = {
+        let mut st = core.lock();
+        st.holders.push(Link { writer, pid: 0, instance: "fake".into(), current: true, bye, bye_rx: None });
+        ["ready", "sweeping"].map(|scope| {
+            let id = st
+                .reg
+                .create(crate::terminals::NewTerminal { argv: vec!["sh".into()], keep: true, ..Default::default() }, 0)
+                .unwrap();
+            st.reg.terminals.get_mut(&id).unwrap().scope = Some(scope.into());
+            st.reg.finish(id, None, Some(signal::TERM), "signaled", 0);
+            id
+        })
+    };
+
+    // Represent a normal-end sweep that has started and has yet to finish.
+    core.normal_sweeps.lock().unwrap().insert("sweeping".into());
+    core.clone().recover_kept(true).await;
+    let before_cleanup: Vec<_> = frames.try_iter().collect();
+    core.normal_sweeps.lock().unwrap().remove("sweeping");
+    core.clone().recover_kept(true).await;
+    let after_cleanup: Vec<_> = frames.try_iter().collect();
+    core.flush_saved().await.unwrap();
+    drop(core);
+    std::fs::remove_dir_all(root).unwrap();
+
+    let spawn_ids = |frames: Vec<Vec<u8>>| {
+        frames
+            .iter()
+            .map(|frame| {
+                let (kind, id, _) = proto::read(&mut frame.as_slice()).unwrap().unwrap();
+                assert_eq!(kind, proto::SPAWN);
+                id
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(spawn_ids(before_cleanup), [ready]);
+    assert_eq!(spawn_ids(after_cleanup), [waiting]);
+}
+
+#[tokio::test]
 async fn label_and_kill_reply_with_the_record_observed_before_flushing() {
     for method in ["terminal.kill", "terminal.label"] {
         let (mut core, root) = test_core();
