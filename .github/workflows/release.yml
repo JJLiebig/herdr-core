@@ -139,7 +139,7 @@ jobs:
       github.triggering_actor == 'ogulcancelik' && vars.AZURE_SIGNING_PROFILE != ''
       && ((github.event_name == 'push' && github.ref_type == 'tag') || github.event_name == 'workflow_dispatch')
     environment: signing
-    runs-on: windows-2025
+    runs-on: windows-2022
     timeout-minutes: 15
     permissions:
       contents: read

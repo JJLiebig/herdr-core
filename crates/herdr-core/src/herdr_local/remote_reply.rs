@@ -91,7 +91,7 @@ pub(crate) async fn send(
     if let Some(mut grant) = grant.filter(|_| reply.is_ok()) {
         grant.confirmed = true;
         drop(grant);
-        core.flush_saved().await?;
+        core.flush_observed().await?;
     }
     reply
 }

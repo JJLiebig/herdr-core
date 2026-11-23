@@ -182,9 +182,9 @@ impl Core {
         let reg: Registry = read_state(&paths.state.join("terminals.json"))?;
         let docs_path = paths.state.join("docs.json");
         let docs = read_state(&docs_path).unwrap_or_else(|e| {
-            eprintln!("core: cannot load documents, starting empty: {e}");
+            let _ = writeln!(io::stderr(), "core: cannot load documents, starting empty: {e}");
             if let Err(e) = std::fs::rename(&docs_path, paths.state.join("docs.json.bad")) {
-                eprintln!("core: cannot quarantine documents: {e}");
+                let _ = writeln!(io::stderr(), "core: cannot quarantine documents: {e}");
             }
             Default::default()
         });
@@ -257,9 +257,30 @@ impl Core {
 
     /// Acknowledged mutations wait here without holding the state lock or blocking the executor.
     /// Attach, events.subscribe snapshots, forwarded run `afar`, and NotesAfar replies do not wait.
-    /// Completed write failures are logged, as before; a stuck disk still times out.
+    /// A failed write is reported here and retried in the background.
     pub async fn flush_saved(&self) -> Result<(), crate::rpc::RpcError> {
-        self.flush_saved_through(self.submitted_registry_version()).await
+        self.wait_for_save(self.submitted_registry_version()).await?.map_err(|e| {
+            crate::rpc::RpcError::new(
+                "unavailable",
+                format!("cannot save terminals: {e}; the operation may already have completed"),
+                "check the terminal and disk before retrying",
+            )
+        })
+    }
+
+    /// Return the action's observed result even when a registry write failed.
+    pub async fn flush_observed(&self) -> Result<(), crate::rpc::RpcError> {
+        self.flush_observed_through(self.submitted_registry_version()).await
+    }
+
+    async fn wait_for_save(&self, version: u64) -> Result<io::Result<()>, crate::rpc::RpcError> {
+        tokio::time::timeout(Duration::from_secs(10), self.registry_writer.flush_through(version)).await.map_err(|_| {
+            crate::rpc::RpcError::new(
+                "unavailable",
+                "registry persistence timed out; the operation may already have completed",
+                "check the terminal and disk before retrying",
+            )
+        })
     }
 
     /// For frequent changes a crash may lose (the next start rebuilds them):
@@ -660,7 +681,7 @@ impl Core {
                 Ok(Ok(_))
             );
         if taken {
-            eprintln!("core: lost the link to holder {instance}, reconnected");
+            let _ = writeln!(io::stderr(), "core: lost the link to holder {instance}, reconnected");
             return;
         }
         let _ = writeln!(

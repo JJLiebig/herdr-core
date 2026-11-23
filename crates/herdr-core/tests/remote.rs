@@ -549,6 +549,20 @@ fn only_the_remote_terminal_messaged_can_reply() {
     s.json(&["server", "restart"]);
     wait_until("the line is back", || s.json(&["machine", "ls"])["machines"][0]["state"] == "connected");
     received(call_back("terminal.send", &remote, "answer after restart"), "answer after restart");
+
+    // Delivery on rohan has finished even if this core cannot persist the new reply grant.
+    let registry = s.root.join("state/herdr-core/test/terminals.json");
+    std::fs::remove_file(&registry).unwrap();
+    std::fs::create_dir(&registry).unwrap();
+    let sent = s.connect().call(
+        1,
+        "terminal.send",
+        json!({"terminal": format!("rohan/{other}"), "caller": local, "text": "delivered"}),
+    );
+    assert!(sent["result"]["turn"].is_u64(), "{sent}");
+    let reply = call_back("terminal.send", &other, "after grant save failure");
+    assert!(reply["result"]["turn"].is_u64(), "{reply}");
+    std::fs::remove_dir(&registry).unwrap();
     s.json(&["kill", &local]);
     denied(call_back("terminal.send", &remote, "after exit"));
 }

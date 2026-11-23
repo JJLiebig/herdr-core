@@ -4,18 +4,22 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 use tokio::sync::watch;
+
+const FIRST_RETRY: Duration = Duration::from_millis(100);
+const MAX_RETRY: Duration = Duration::from_secs(5);
 
 pub(super) struct RegistryWriter {
     queue: Arc<(Mutex<Pending>, Condvar)>,
-    completed: watch::Receiver<u64>,
+    completed: watch::Receiver<Completion>,
     worker: Option<JoinHandle<()>>,
 }
 
 #[derive(Default)]
 struct Pending {
     latest: Option<(u64, Vec<u8>)>,
-    durable: Option<(u64, Vec<u8>, DurableReply)>,
+    durable: Option<(Vec<u8>, DurableReply)>,
     submitted: u64,
     closed: bool,
 }
@@ -32,6 +36,12 @@ impl Drop for WorkerExit {
     }
 }
 
+#[derive(Default)]
+struct Completion {
+    saved: u64,
+    failed: Option<(u64, String)>,
+}
+
 impl RegistryWriter {
     pub fn new(path: PathBuf) -> io::Result<Self> {
         Self::start(move |bytes| write_atomic(&path, bytes))
@@ -39,27 +49,53 @@ impl RegistryWriter {
 
     pub(super) fn start(mut write: impl FnMut(&[u8]) -> io::Result<()> + Send + 'static) -> io::Result<Self> {
         let queue = Arc::new((Mutex::new(Pending::default()), Condvar::new()));
-        let (done, completed) = watch::channel(0);
+        let (done, completed) = watch::channel(Completion::default());
         let work = queue.clone();
         let worker = std::thread::Builder::new().name("registry-writer".into()).spawn(move || {
             let _exit = WorkerExit(work.clone());
             let (mutex, changed) = &*work;
             let mut pending = mutex.lock().unwrap();
+            let mut retry = FIRST_RETRY;
             loop {
-                let next =
-                    pending.latest.take().map(|(version, bytes)| (version, bytes, None)).or_else(|| {
-                        pending.durable.take().map(|(version, bytes, reply)| (version, bytes, Some(reply)))
-                    });
-                if let Some((version, bytes, reply)) = next {
+                if let Some((bytes, reply)) = pending.durable.take() {
+                    // The caller holds the state lock. This claim includes all previous ordinary saves.
+                    // If it fails the caller rolls it back, so retain the ordinary snapshot for retry.
                     drop(pending);
                     let result = write(&bytes);
-                    if let Some(reply) = reply {
-                        let _ = reply.send(result);
-                    } else if let Err(e) = result {
+                    pending = mutex.lock().unwrap();
+                    if result.is_ok() {
+                        pending.latest = None;
+                        done.send_replace(Completion { saved: pending.submitted, failed: None });
+                        retry = FIRST_RETRY;
+                    }
+                    let _ = reply.send(result);
+                    continue;
+                }
+                if let Some((version, bytes)) = pending.latest.take() {
+                    drop(pending);
+                    let result = write(&bytes);
+                    if let Err(e) = &result {
                         let _ = writeln!(io::stderr(), "core: cannot save terminals: {e}");
                     }
-                    done.send_replace(version);
                     pending = mutex.lock().unwrap();
+                    match result {
+                        Ok(()) => {
+                            done.send_replace(Completion { saved: version, failed: None });
+                            retry = FIRST_RETRY;
+                        }
+                        Err(e) => {
+                            done.send_modify(|done| done.failed = Some((version, e.to_string())));
+                            if !pending.closed {
+                                // A save submitted during the write already supersedes this one.
+                                pending.latest.get_or_insert((version, bytes));
+                                pending = changed
+                                    .wait_timeout_while(pending, retry, |p| !p.closed && p.durable.is_none())
+                                    .unwrap()
+                                    .0;
+                                retry = (retry * 2).min(MAX_RETRY);
+                            }
+                        }
+                    }
                 } else if pending.closed {
                     break;
                 } else {
@@ -74,10 +110,11 @@ impl RegistryWriter {
     pub fn save(&self, bytes: Vec<u8>) {
         let (mutex, changed) = &*self.queue;
         let mut pending = mutex.lock().unwrap();
+        // Even a stopped writer must not acknowledge a new mutation with an earlier successful version.
+        pending.submitted += 1;
         if pending.closed {
             return;
         }
-        pending.submitted += 1;
         pending.latest = Some((pending.submitted, bytes));
         changed.notify_one();
     }
@@ -90,8 +127,7 @@ impl RegistryWriter {
         if pending.closed {
             return Err(io::Error::other("registry writer stopped"));
         }
-        pending.submitted += 1;
-        pending.durable = Some((pending.submitted, bytes, send));
+        pending.durable = Some((bytes, send));
         changed.notify_one();
         drop(pending);
         receive.recv().map_err(|_| io::Error::other("registry writer stopped"))?
@@ -109,11 +145,15 @@ impl RegistryWriter {
     /// A newer snapshot can include this version's changes if pending saves coalesced.
     pub(super) async fn flush_through(&self, version: u64) -> io::Result<()> {
         let mut completed = self.completed.clone();
-        completed
-            .wait_for(|written| *written >= version)
+        let result = completed
+            .wait_for(|done| done.saved >= version || done.failed.as_ref().is_some_and(|(v, _)| *v >= version))
             .await
             .map_err(|_| io::Error::other("registry writer stopped"))?;
-        Ok(())
+        if result.saved >= version {
+            Ok(())
+        } else {
+            Err(io::Error::other(result.failed.as_ref().expect("failed version").1.clone()))
+        }
     }
 }
 
@@ -161,23 +201,49 @@ mod tests {
         assert!(writer.save_durable(b"later".to_vec()).is_err());
     }
 
+    #[tokio::test]
+    async fn a_writer_lost_during_a_claim_cannot_acknowledge_the_next_mutation() {
+        let writer = RegistryWriter::start(|_| panic!("writer failed")).unwrap();
+        assert!(writer.save_durable(b"claim".to_vec()).is_err());
+        assert!(writer.completed.clone().changed().await.is_err());
+        writer.save(b"later".to_vec());
+        assert!(writer.flush().await.is_err());
+    }
+
     #[test]
-    fn durable_save_follows_an_inflight_snapshot_and_reports_failure() {
-        let (started, writes) = mpsc::channel();
-        let (release, blocked) = mpsc::channel();
-        let writer = RegistryWriter::start(move |bytes| {
-            started.send(bytes.to_vec()).unwrap();
-            blocked.recv_timeout(Duration::from_secs(5)).unwrap();
-            if bytes == b"durable" { Err(io::Error::other("disk failed")) } else { Ok(()) }
-        })
-        .unwrap();
-        writer.save(b"old".to_vec());
-        assert_eq!(writes.recv_timeout(Duration::from_secs(5)).unwrap(), b"old");
-        let save = std::thread::spawn(move || writer.save_durable(b"durable".to_vec()));
-        release.send(()).unwrap();
-        assert_eq!(writes.recv_timeout(Duration::from_secs(5)).unwrap(), b"durable");
-        release.send(()).unwrap();
-        assert!(save.join().unwrap().is_err());
+    fn durable_claims_and_retries_leave_the_last_committed_state_on_disk() {
+        for accept_claim in [false, true] {
+            let (started, writing) = mpsc::channel();
+            let (release, blocked) = mpsc::channel();
+            let (saved, disk) = mpsc::channel();
+            let mut reject_claim = !accept_claim;
+            let writer = RegistryWriter::start(move |bytes| {
+                if bytes == b"old" {
+                    started.send(()).unwrap();
+                    blocked.recv().unwrap();
+                    return Err(io::Error::other("disk full"));
+                }
+                if bytes == b"claim" && std::mem::take(&mut reject_claim) {
+                    return Err(io::Error::other("claim rejected"));
+                }
+                saved.send(bytes.to_vec()).unwrap();
+                Ok(())
+            })
+            .unwrap();
+            writer.save(b"old".to_vec());
+            writing.recv().unwrap();
+            writer.save(b"committed".to_vec());
+            std::thread::scope(|scope| {
+                let claim = scope.spawn(|| writer.save_durable(b"claim".to_vec()));
+                let (lock, changed) = &*writer.queue;
+                drop(changed.wait_while(lock.lock().unwrap(), |p| p.durable.is_none()).unwrap());
+                release.send(()).unwrap();
+                assert_eq!(claim.join().unwrap().is_ok(), accept_claim);
+            });
+            drop(writer);
+            let expected = if accept_claim { b"claim".as_slice() } else { b"committed" };
+            assert_eq!(disk.into_iter().last().unwrap(), expected);
+        }
     }
 
     #[test]
@@ -250,20 +316,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_flush_can_be_cancelled_and_a_failed_write_does_not_fail_the_barrier() {
+    async fn a_failed_flush_reports_the_error_and_retries_the_newest_snapshot() {
         let (started, writes) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
-        let writer = RegistryWriter::start(move |_| {
-            started.send(()).unwrap();
-            blocked.recv_timeout(Duration::from_secs(5)).unwrap();
-            Err(io::Error::other("disk failed"))
+        let writer = RegistryWriter::start(move |bytes| {
+            started.send(bytes.to_vec()).unwrap();
+            blocked.recv_timeout(Duration::from_secs(5)).unwrap()
         })
         .unwrap();
         writer.save(vec![1]);
-        writes.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(tokio::time::timeout(Duration::from_millis(10), writer.flush()).await.is_err());
-        release.send(()).unwrap();
-        writer.flush().await.unwrap();
+        assert_eq!(writes.recv_timeout(Duration::from_secs(5)).unwrap(), [1]);
+        let first = writer.flush();
+        tokio::pin!(first);
+        assert!(tokio::time::timeout(Duration::from_millis(10), &mut first).await.is_err());
+        writer.save(vec![2]);
+        writer.save(vec![3]);
+        release.send(Err(io::Error::other("disk failed"))).unwrap();
+        assert_eq!(first.await.unwrap_err().to_string(), "disk failed");
+        assert_eq!(writes.recv_timeout(Duration::from_secs(5)).unwrap(), [3]);
+        release.send(Ok(())).unwrap();
         writer.flush().await.unwrap();
     }
 }
