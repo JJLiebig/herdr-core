@@ -3,7 +3,7 @@
 //! Everything above it is shared.
 
 mod herdr_local;
-pub(crate) use herdr_local::{recovery_command, recovery_shell, resume_command, stdout};
+pub(crate) use herdr_local::{mouse_root_is_shell, recovery_command, recovery_shell, resume_command, stdout};
 
 mod session;
 pub use session::{LoginSession, holder_current};

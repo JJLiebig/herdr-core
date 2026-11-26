@@ -718,6 +718,7 @@ impl Core {
                 }
                 proto::FOREGROUND_IS => {
                     let pgid = proto::parse::<proto::Foreground>(&payload).map_or(-1, |f| f.pgid);
+                    self.mouse_foreground(&mut st, id, instance, pgid);
                     for tx in st.foreground.remove(&id).unwrap_or_default() {
                         let _ = tx.send(pgid);
                     }

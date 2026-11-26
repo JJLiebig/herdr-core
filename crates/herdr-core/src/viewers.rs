@@ -149,10 +149,13 @@ impl Core {
         if !st.reg.terminals.get(&id).is_some_and(|t| t.is_live() && t.holder.as_deref() == Some(instance)) {
             return;
         }
-        st.last_output.insert(id, Instant::now());
-        *st.output_seq.entry(id).or_default() += 1;
-        if let Some(t) = st.reg.terminals.get_mut(&id) {
-            t.printed += bytes.iter().filter(|b| **b == b'\n').count() as u64;
+        // A foreground mouse reset flushes the relay without PTY output.
+        if !bytes.is_empty() {
+            st.last_output.insert(id, Instant::now());
+            *st.output_seq.entry(id).or_default() += 1;
+            if let Some(t) = st.reg.terminals.get_mut(&id) {
+                t.printed += bytes.iter().filter(|b| **b == b'\n').count() as u64;
+            }
         }
         // While a read scrolls the app, its frames are ours alone: viewers get one repaint after.
         let scrolling = st.stitching.contains(&id);
