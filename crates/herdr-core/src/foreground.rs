@@ -83,7 +83,7 @@ pub fn procargs(pid: i32) -> Option<(Vec<String>, Vec<u8>)> {
     Some((argv, rest.to_vec()))
 }
 
-fn shell_root(root: &Foreground) -> bool {
+pub(crate) fn shell_root(root: &Foreground) -> bool {
     // Command and script wrappers can share their foreground group with a live agent.
     if root.argv.iter().skip(1).any(|arg| {
         (!arg.starts_with('-') && !arg.starts_with('+'))

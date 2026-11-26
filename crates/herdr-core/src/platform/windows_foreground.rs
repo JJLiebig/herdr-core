@@ -51,7 +51,7 @@ fn newest_child(root: u32, procs: &[Proc]) -> Option<u32> {
     (current.pid != root).then_some(current.pid)
 }
 
-fn shell(name: &str) -> bool {
+pub(super) fn shell(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     matches!(
         name.strip_suffix(".exe").unwrap_or(&name),

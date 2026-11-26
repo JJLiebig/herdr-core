@@ -1,5 +1,7 @@
 //! Private fork: print a recovery notice inside the PTY before starting its shell.
+mod mouse_reset;
 pub(crate) mod stdout;
+pub(crate) use mouse_reset::mouse_root_is_shell;
 
 #[cfg(windows)]
 pub(super) const NOTICE_ENV: &str = "HC_RECOVERY_NOTICE";

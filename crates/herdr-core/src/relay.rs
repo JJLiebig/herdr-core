@@ -11,6 +11,8 @@ use ghostty_vt::Terminal as Screen;
 use std::time::Duration;
 
 mod graphics;
+#[path = "relay/herdr_local/mouse_reset.rs"]
+mod mouse_reset;
 pub(crate) use graphics::Answers;
 
 /// How long DA1 waits behind an image for a viewer's answer.
@@ -26,6 +28,7 @@ const MAX_STRING: usize = 512;
 
 #[derive(Default)]
 pub struct Relay {
+    mouse_reset: mouse_reset::MouseReset,
     /// An escape sequence still arriving, kept back until it can be judged.
     held: Vec<u8>,
     /// Inside an APC: how many reply bytes were waiting when it began.
@@ -128,11 +131,23 @@ impl Relay {
         let mut run = 0;
         for (i, &b) in input.iter().enumerate() {
             let image = self.graphics.push(b);
-            if self.held.is_empty() {
-                if b == ESC {
-                    pass(screen, &mut out, &input[run..i]);
-                    self.held.push(b);
+            if self.mouse_reset.held_escape {
+                self.resume_mouse_escape(screen, &mut out, b);
+            }
+            if b == ESC {
+                if self.held.is_empty() {
+                    self.pass_mouse_boundary(screen, &mut out, &input[run..i]);
                 }
+                if self.hold_mouse_escape() {
+                    run = i + 1;
+                    continue;
+                }
+                if self.held.is_empty() {
+                    self.held.push(b);
+                    continue;
+                }
+            }
+            if self.held.is_empty() {
                 continue;
             }
             self.held.push(b);
@@ -174,11 +189,12 @@ impl Relay {
                         screen.drop_responses_after(keep);
                     }
                 }
+                self.pass_mouse_boundary(screen, &mut out, &[]);
                 run = i + 1;
             }
         }
         if self.held.is_empty() {
-            pass(screen, &mut out, &input[run..]);
+            self.pass_mouse_boundary(screen, &mut out, &input[run..]);
         }
         out
     }
@@ -187,17 +203,27 @@ impl Relay {
     /// capturing a repaint at ground even if this read also starts another image.
     pub fn feed_to_ground(&mut self, screen: &mut Screen, input: &[u8]) -> (Vec<u8>, Option<(usize, Vec<u8>)>) {
         let mut bytes = std::mem::take(&mut self.held);
+        let held = bytes.len();
         bytes.extend_from_slice(input);
-        let Some(n) = screen.write_until_ground(&bytes) else {
+        let Some((n, mut out)) = self.ground_for_recovery(screen, &mut bytes) else {
             return (bytes, None);
         };
         if let Some(keep) = self.apc.take() {
             screen.drop_responses_after(keep);
         }
         let paint = screen.paint(0);
-        let mut out = bytes[..n].to_vec();
-        out.extend(self.feed(screen, &bytes[n..]));
-        (out, Some((n, paint)))
+        let at = out.len();
+        // The screen was already at ground, but the relay had started a
+        // sequence before the reset was requested. Let that sequence finish.
+        let rest = if n == 0 && self.mouse_reset.pending {
+            self.held.extend_from_slice(&bytes[..held]);
+            &bytes[held..]
+        } else {
+            self.mouse_reset.held_escape = false;
+            &bytes[n..]
+        };
+        out.extend(self.feed(screen, rest));
+        (out, Some((at, paint)))
     }
 
     /// Writes a half-received sequence to the screen (before a snapshot).
@@ -208,6 +234,10 @@ impl Relay {
     fn judge(&self) -> Seq {
         let h = &self.held;
         let last = *h.last().expect("held starts with ESC");
+        // CAN and SUB cancel a buffered sequence before the next one begins.
+        if self.mouse_reset.pending && matches!(last, 0x18 | 0x1a) {
+            return Seq::Done { maybe_query: false };
+        }
         match h.get(1) {
             None => Seq::Pending,
             Some(b'[') if h.len() > 2 && (0x40..=0x7e).contains(&last) => {
