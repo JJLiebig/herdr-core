@@ -65,7 +65,8 @@ impl Core {
         } else {
             let Some(app) = osc_value(&report.raw, b"app").and_then(|v| std::str::from_utf8(v).ok()) else { return };
             let Some(session) = osc_field(&report.raw, b"session").filter(|v| valid_session(v)) else { return };
-            (Some(app.to_owned()), Some(std::str::from_utf8(session).expect("UUID is ASCII").to_owned()))
+            let legacy_app = (!t.native_recovery).then(|| app.to_owned());
+            (legacy_app, Some(std::str::from_utf8(session).expect("UUID is ASCII").to_owned()))
         };
         if (t.resume_app.as_ref(), t.resume_session.as_ref()) == (binding.0.as_ref(), binding.1.as_ref()) {
             return;
@@ -104,7 +105,12 @@ impl Core {
         }
         let result = self
             .type_in(id, crate::input::quiet(), true, |st, t| {
-                if t.scope.as_ref() != Some(&scope) || !t.keep || t.recovery.is_some() || t.status.is_some() {
+                if t.scope.as_ref() != Some(&scope)
+                    || !t.keep
+                    || t.recovery.is_some()
+                    || t.status.is_some()
+                    || t.native_recovery
+                {
                     return Err(RpcError::new("unavailable", "recovery shell changed before resume", ""));
                 }
                 let screen = &st.screens[&id];
@@ -165,10 +171,12 @@ impl Core {
             t.recovery = None;
             t.resume_session = None;
             t.resume_app = None;
-        } else if let Some(recovery) = p.recovery {
+        } else if let Some(recovery) = p.recovery
+            && !t.native_recovery
+        {
             t.recovery = Some(recovery);
         }
-        // A successful registration means it reached disk, before any acknowledgement or event.
+        // Acknowledge the effective keep and recovery choices only after they reach disk.
         let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
         if let Err(e) = self.save_durable(bytes) {
             st.reg.terminals.insert(id, was);
@@ -362,6 +370,89 @@ mod tests {
             crate::paths::read_state(&core.paths.state.join("terminals.json")).unwrap();
         assert!(!disk.terminals[&id].keep);
         assert!(disk.terminals[&id].recovery.is_none());
+        drop(core);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_set_supersedes_legacy_through_clear_exit_and_buffered_status() {
+        use sha2::{Digest, Sha256};
+        use std::process::{Command, Stdio};
+
+        if crate::platform::resume_user().is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("hc-native-owner-{}", crate::platform::random_hex()));
+        let paths = Paths {
+            state: root.join("state"),
+            config: root.join("config.toml"),
+            socket: root.join("core.sock"),
+            holder_socket: root.join("holder.sock"),
+        };
+        paths.create_dirs().unwrap();
+        let core = Core::start(paths, crate::api::CoreInfo { id: "test".into(), name: "test".into() }).unwrap();
+        let mut owner = Command::new("cat").stdin(Stdio::piped()).spawn().unwrap();
+        let mut resume = crate::resume::Resume::new(&core.paths.state).unwrap();
+        resume.set_root(std::process::id());
+        let frame = |fields: &str, token: &str| {
+            let body = format!("pid={}:time={}:{fields}", owner.id(), crate::runtime::now_ms() / 1000);
+            let mac = Sha256::digest(format!("{body}:{token}"));
+            format!("\x1b]7577;{body}:mac={mac:x}\x07")
+        };
+        let rejected = frame("argv=c2g=", "invalid");
+        let armed = frame("argv=c2g=", resume.token());
+        let clear = frame("clear=1", resume.token());
+        let uuid = "01234567-89ab-cdef-0123-456789abcdef";
+        let status = format!("\x1b]7501;state=idle:app=codex:session={uuid}\x07");
+        let id = {
+            let mut st = core.lock();
+            let id =
+                st.reg.create(NewTerminal { argv: vec!["shell".into()], keep: true, ..Default::default() }, 0).unwrap();
+            let t = st.reg.terminals.get_mut(&id).unwrap();
+            t.scope = Some("current".into());
+            t.holder = Some("holder".into());
+            t.pid = Some(std::process::id());
+            t.resume = Some(resume);
+            st.screens.insert(id, ghostty_vt::Terminal::new(80, 24, 1 << 20));
+            id
+        };
+        let keep = || KeepParams {
+            terminal: "t1".into(),
+            keep: true,
+            expected_scope: Some("current".into()),
+            recovery: Some(Recovery { argv: vec!["legacy".into()], cwd: root.display().to_string() }),
+        };
+        let emit = |frame: &str| core.output(&mut core.lock(), id, "holder", frame.as_bytes());
+        core.set_keep(id, keep()).unwrap();
+        emit(&status);
+        emit(&rejected);
+        emit(&clear);
+        assert!(core.lock().reg.terminals[&id].recovery.is_some(), "only an accepted set supersedes legacy");
+        emit(&armed);
+        emit(&clear);
+        core.flush_saved().await.unwrap();
+        assert!(core.lock().reg.terminals[&id].recovery.is_none(), "the native set retired the original hook");
+        core.set_keep(id, KeepParams { keep: false, recovery: None, ..keep() }).unwrap();
+        assert!(core.set_keep(id, keep()).unwrap().0.keep, "the hook still enables keep");
+        emit(&status);
+        let disk: crate::terminals::Registry =
+            crate::paths::read_state(&core.paths.state.join("terminals.json")).unwrap();
+        let t = &disk.terminals[&id];
+        assert!(t.recovery.is_none());
+        assert!(t.osc_resume_command(&BTreeMap::new()).is_none());
+        assert_eq!(t.resume_session.as_deref(), Some(uuid));
+        assert_eq!(t.status.as_ref().unwrap().state, "idle");
+
+        drop(owner.stdin.take());
+        assert!(owner.wait().unwrap().success());
+        let other_uuid = "12345678-89ab-cdef-0123-456789abcdef";
+        emit(&status.replace(uuid, other_uuid));
+        let record = core.lock().reg.terminals[&id].clone();
+        assert_eq!(record.resume_session.as_deref(), Some(other_uuid));
+        assert!(record.osc_resume_command(&BTreeMap::new()).is_none(), "buffered status after exit stays display-only");
+        core.set_keep(id, keep()).unwrap();
+        assert!(core.lock().reg.terminals[&id].recovery.is_none(), "the scope is shared with the old program");
         drop(core);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -6,6 +6,31 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
+
+pub(super) fn account() -> Option<(std::ffi::OsString, std::ffi::OsString)> {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    // getpwuid_r keeps status requests from sharing libc's buffer.
+    let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buffer = vec![0u8; 16384];
+    let mut result = std::ptr::null_mut();
+    let error = unsafe {
+        libc::getpwuid_r(libc::getuid(), entry.as_mut_ptr(), buffer.as_mut_ptr().cast(), buffer.len(), &mut result)
+    };
+    if error != 0 || result.is_null() {
+        return None;
+    }
+    let entry = unsafe { entry.assume_init() };
+    let field = |pointer: *const libc::c_char| {
+        if pointer.is_null() {
+            OsString::new()
+        } else {
+            OsString::from_vec(unsafe { std::ffi::CStr::from_ptr(pointer) }.to_bytes().to_vec())
+        }
+    };
+    Some((field(entry.pw_name), field(entry.pw_shell)))
+}
 
 pub fn check_via(_target: &str) -> io::Result<()> {
     Ok(())
@@ -119,7 +144,7 @@ pub fn remove_endpoint(path: &Path) {
 
 /// Default homes for state and config (XDG_STATE_HOME / XDG_CONFIG_HOME win).
 pub fn data_dirs() -> (PathBuf, PathBuf) {
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/".into()));
+    let home = std::env::home_dir().unwrap_or_else(|| "/".into());
     (home.join(".local/state"), home.join(".config"))
 }
 
@@ -150,6 +175,37 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
 pub fn private_file(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)
+}
+
+pub(crate) fn open_state_temp(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).custom_flags(libc::O_NOFOLLOW);
+    let replace = match options.open(path) {
+        Ok(file) => {
+            let meta = file.metadata()?;
+            if meta.is_file() && meta.uid() == unsafe { libc::geteuid() } && meta.nlink() == 1 {
+                file.set_len(0)?;
+                if meta.mode() & 0o7777 != 0o600 {
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                }
+                return Ok(file);
+            }
+            true
+        }
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    };
+    if replace
+        && let Err(error) = std::fs::remove_file(path)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return Err(error);
+    }
+    let file = options.create_new(true).mode(0o600).open(path)?;
+    if file.metadata()?.mode() & 0o7777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
 }
 
 pub fn is_link(metadata: &std::fs::Metadata) -> bool {
@@ -230,8 +286,14 @@ mod nofile_tests {
 
 /// Starts `cmd` in its own session (ending the terminal it was started from
 /// won't end it), stdin/stdout to /dev/null, stderr to `log`.
-pub fn spawn_detached(mut cmd: Command, log: std::fs::File) -> io::Result<()> {
+pub fn spawn_detached(mut cmd: Command, log: std::fs::File, clean: bool) -> io::Result<()> {
     use std::process::Stdio;
+    if clean {
+        // Retain explicit unsets until the service adapters have had their chance.
+        let vars: Vec<_> =
+            cmd.get_envs().filter_map(|(key, value)| Some((key.to_owned(), value?.to_owned()))).collect();
+        cmd.env_clear().envs(vars);
+    }
     #[cfg(target_os = "macos")]
     cmd.env_remove("XPC_FLAGS");
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
@@ -650,6 +712,7 @@ pub struct Pty {
     master: File,
     stop: Stream,
     _stop_sender: Stream,
+    signaled_foreground: AtomicI32,
 }
 
 /// Cancels blocked IO when the holder releases the terminal, even if a
@@ -753,7 +816,11 @@ pub fn spawn_pty(
         });
     }
     let child = cmd.spawn()?;
-    Ok((Pty { master, stop, _stop_sender: stop_sender }, child))
+    Ok((Pty { master, stop, _stop_sender: stop_sender, signaled_foreground: AtomicI32::new(0) }, child))
+}
+
+fn same_session(pgid: i32, sid: i32) -> bool {
+    pgid > 0 && unsafe { libc::getsid(pgid) == sid }
 }
 
 impl Pty {
@@ -778,18 +845,51 @@ impl Pty {
 
     /// The program's group, plus whatever group is in the foreground.
     pub fn signal(&self, pid: u32, signal: i32) {
+        let sid = pid as i32;
+        // Read the foreground group before signaling the session leader: an
+        // interactive shell handling SIGHUP reclaims the PTY via TIOCSPGRP
+        // before exiting. Only the current foreground group is escalated.
+        let fg = unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) };
+        if fg > 0 && fg != sid {
+            self.signaled_foreground.store(fg, Ordering::Relaxed);
+        }
         unsafe {
-            libc::killpg(pid as i32, signal);
-            let fg = libc::tcgetpgrp(self.master.as_raw_fd());
-            if fg > 0 && fg != pid as i32 {
+            libc::killpg(sid, signal);
+            if fg > 0 && fg != sid {
                 libc::killpg(fg, signal);
             }
         }
     }
 
-    /// Its program is gone: hang up what still holds the terminal.
-    pub fn hang_up(&self, pid: u32) {
-        unsafe { libc::killpg(pid as i32, libc::SIGHUP) };
+    /// Its program is gone: hang up what still holds the terminal, and wake
+    /// any foreground job signaled before the leader exited.
+    pub fn hang_up(&self, pid: u32, still_open: bool) {
+        let sid = pid as i32;
+        let signaled_fg = self.signaled_foreground.swap(0, Ordering::Relaxed);
+        // Send SIGHUP + SIGCONT to both the shell's group and its signaled
+        // foreground job group: a TUI job stopped by SIGTTOU during shell
+        // teardown (e.g. restoring termios right after the shell ran TIOCSPGRP)
+        // stays frozen in T state if the shell exited before the stop settled.
+        // On macOS, XNU revokes the PTY when the session leader exits, so the
+        // master reader sees EOF (`!still_open`) even while that stopped job
+        // is still alive; still wake the foreground group we signaled.
+        let candidates = if still_open {
+            [sid, unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) }, signaled_fg]
+        } else {
+            [0, 0, signaled_fg]
+        };
+        let mut signaled = [0i32; 3];
+        let mut count = 0;
+        for pgid in candidates {
+            if pgid > 0 && !signaled[..count].contains(&pgid) && (pgid == sid || same_session(pgid, sid)) {
+                signaled[count] = pgid;
+                count += 1;
+                unsafe {
+                    libc::killpg(pgid, libc::SIGHUP);
+                    libc::killpg(pgid, libc::SIGCONT);
+                }
+            }
+        }
     }
 }
 

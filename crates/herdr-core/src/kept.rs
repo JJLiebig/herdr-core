@@ -1,4 +1,4 @@
-//! Lost kept records stay live without a holder until a replacement shell starts.
+//! Lost kept terminals stay live without a holder until recovery starts.
 use crate::holder_proto as proto;
 use crate::runtime::{Core, now_ms};
 use crate::terminals::{KEEP_RETRY_MS, Terminal};
@@ -28,10 +28,14 @@ impl Terminal {
 
 /// Under what the lost program left on screen, so it isn't taken for something still running.
 const RESTORED: &[u8] = b"\x1b[0m\r\n\x1b[2m-- the program above ended; this is a new shell --\x1b[0m\r\n";
+const RESUMING: &[u8] = b"\x1b[0m\r\n\x1b[2m-- the program above ended; starting it again --\x1b[0m\r\n";
 
 impl Core {
     pub(crate) fn spawn_failed(&self, st: &mut crate::runtime::State, id: u32) {
         let t = st.reg.terminals.get_mut(&id).expect("failed spawn");
+        if let Some(resume) = t.resume.take() {
+            crate::resume::remove_launch(&self.paths.state, resume.launch.as_deref());
+        }
         t.holder = None;
         t.pid = None;
         if st.killing.contains(&id) || !t.keep || t.reason.as_deref().is_none_or(|r| r == "spawn_pending") {
@@ -97,12 +101,30 @@ impl Core {
             let previous = (t.recovery.is_some() || t.resume_app.is_some()).then(|| t.clone());
             t.title.clear();
             let mut env = crate::api::child_env(base_env.clone(), t.restart_env.clone());
-            let resume = t.osc_resume_command(&commands);
-            let (argv, cwd) = t.prepare_recovery(&mut env, &shell);
-            let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env);
+            t.identity = crate::api::terminal_identity(&env);
+            let shell_command = t.osc_resume_command(&commands);
+            let (fallback, cwd) = t.prepare_recovery(&mut env, &shell);
+            let mut resume = crate::resume::Resume::new(&self.paths.state);
+            let attempt = t
+                .resume
+                .take()
+                .filter(|_| resume.is_some())
+                .and_then(|old| old.prepare(&self.paths.state, id, &shell, &cwd));
+            let (launch, argv, cwd) = match attempt {
+                Some((file, argv, cwd)) => (Some(file), argv, cwd),
+                None => (None, fallback, cwd),
+            };
+            let resuming = launch.is_some();
+            let (env, scope) = crate::api::terminal_env(&self, id, &cwd, env, resume.as_ref());
+            if let Some(resume) = &mut resume {
+                resume.rearmed = resuming;
+                resume.launch = launch;
+            }
+            t.resume = resume;
+            t.native_recovery = false;
             t.scope = Some(scope.clone());
             t.holder = Some(instance);
-            t.argv = argv;
+            t.argv = if resuming { shell.clone() } else { argv.clone() };
             t.cwd = cwd.clone();
             t.template = None;
             t.reported = false;
@@ -113,7 +135,7 @@ impl Core {
             t.submit = None;
             t.stop = None;
             t.paste_gap_ms = None;
-            let spawn = proto::Spawn { argv: t.argv.clone(), env, cwd, cols: t.cols, rows: t.rows };
+            let spawn = proto::Spawn { argv, env, cwd, cols: t.cols, rows: t.rows };
             let identity = t.identity.clone();
             if let Some(previous) = previous {
                 let bytes = serde_json::to_vec(&st.reg).expect("registry serializes");
@@ -137,7 +159,7 @@ impl Core {
                 let mut screen = ghostty_vt::Terminal::new(spawn.cols, spawn.rows, self.history_bytes());
                 if restore_screen && let Some(old) = self.take_saved_screen(id) {
                     screen.write(&old.replay());
-                    screen.write(RESTORED);
+                    screen.write(if resuming { RESUMING } else { RESTORED });
                     // ConPTY paints a new console from the top left: move what was there into history.
                     if cfg!(windows) {
                         screen.write(&b"\n".repeat(spawn.rows as usize));
@@ -151,7 +173,7 @@ impl Core {
             st.last_output.remove(&id);
             if let Some(link) = st.link(id) {
                 link.send(&proto::json_frame(proto::SPAWN, id, &spawn));
-                if let Some(command) = resume {
+                if let Some(command) = shell_command {
                     let core = self.clone();
                     tokio::spawn(async move {
                         core.resume_in_shell(id, scope, command).await;

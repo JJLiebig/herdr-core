@@ -4,10 +4,14 @@ use super::*;
 
 #[derive(Subcommand)]
 pub(super) enum ServerCmd {
+    /// Start a stopped core using this shell's environment.
     Start,
     Stop,
     Status,
-    /// Restart the core (e.g. after an update); programs keep running.
+    /// Restart the core with its existing environment. Running programs stay alive.
+    ///
+    /// If the core is stopped, it starts with the platform's default environment.
+    /// Use --fresh to take this shell's environment.
     Restart {
         /// Take this shell's environment for new terminals; run from a terminal outside Herdr.
         #[arg(long)]
@@ -15,7 +19,7 @@ pub(super) enum ServerCmd {
     },
 }
 
-pub(super) fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
+pub(super) fn restart(paths: &Paths, fresh: bool) -> Result<crate::platform::Stream, RpcError> {
     if fresh && std::env::var_os("HC_TERMINAL_ID").is_some() {
         eprintln!(
             "hc: this shell carries Herdr's environment; run --fresh from a terminal outside Herdr or unset unwanted variables first"
@@ -28,8 +32,9 @@ pub(super) fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
             crate::restart::prepare_start(paths, environment).map_err(|e| {
                 RpcError::new("unavailable", e.to_string(), "retry hc server restart --fresh once the core is running")
             })?;
+            return client::connect_or_start_explicit(paths);
         }
-        return Ok(());
+        return client::connect_or_start(paths);
     };
     let params = if fresh {
         let hello = client::call(&stream, "hello", json!({}))?;
@@ -46,7 +51,7 @@ pub(super) fn restart(paths: &Paths, fresh: bool) -> Result<(), RpcError> {
     };
     client::call(&stream, "server.restart", params)?;
     wait_closed(&stream);
-    Ok(())
+    if fresh { client::connect_or_start_explicit(paths) } else { client::connect_replacement(paths) }
 }
 
 /// Stops the core and returns once it has exited (its connection closes).

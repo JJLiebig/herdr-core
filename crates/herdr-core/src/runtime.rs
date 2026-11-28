@@ -179,7 +179,8 @@ fn finish_reason(killed: bool, stopping: bool, host_shutdown: bool) -> &'static 
 
 impl Core {
     pub fn start(paths: Paths, info: CoreInfo) -> io::Result<Arc<Core>> {
-        let reg: Registry = read_state(&paths.state.join("terminals.json"))?;
+        let mut reg: Registry = read_state(&paths.state.join("terminals.json"))?;
+        crate::resume::prepare_state(&paths.state, &mut reg);
         let docs_path = paths.state.join("docs.json");
         let docs = read_state(&docs_path).unwrap_or_else(|e| {
             let _ = writeln!(io::stderr(), "core: cannot load documents, starting empty: {e}");
@@ -397,7 +398,7 @@ impl Core {
     ) -> io::Result<Vec<u32>> {
         std::io::Write::write_all(
             &mut stream,
-            &proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION }),
+            &proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION, tail_offsets: true }),
         )?;
         let welcome: proto::Welcome = match proto::read(&mut stream)? {
             Some((proto::WELCOME, _, payload)) => proto::parse(&payload)?,
@@ -457,6 +458,9 @@ impl Core {
             self.save(&st);
             adopted
         };
+        for &id in &adopted {
+            self.reconcile_resume(id);
+        }
         let core = self.clone();
         let (instance, path) = (welcome.instance, path.to_path_buf());
         std::thread::spawn(move || core.read_holder(stream, instance, path));
@@ -510,6 +514,10 @@ impl Core {
                 }
             }
             let tail = tails.remove(&id).unwrap_or_default();
+            if let Some(resume) = &mut st.reg.terminals.get_mut(&id).expect("adopted").resume {
+                resume.adopt(h.pid, h.raw_offset);
+                self.resume_output(st, id, &tail, now_ms());
+            }
             let saved = if handover {
                 self.take_saved_screen(id)
             } else {
@@ -518,9 +526,12 @@ impl Core {
             };
             let exact = saved.is_some();
             let mut screen = saved.unwrap_or_else(|| Screen::new(h.cols, h.rows, self.history_bytes()));
+            screen.set_xtversion(&st.reg.terminals[&id].identity);
+            let replay_from =
+                if exact { h.saved_offset.saturating_sub(h.raw_offset).min(tail.len() as u64) as usize } else { 0 };
             // Through a relay, like live output, so requests the screen doesn't keep are seen.
             let mut relay = Relay::default();
-            relay.feed(&mut screen, &tail);
+            relay.feed(&mut screen, &tail[replay_from..]);
             relay.flush(&mut screen);
             // After a handover the tail is new output nobody answered yet; after a
             // crash it was answered long ago and replies would be typed as garbage.
@@ -530,7 +541,6 @@ impl Core {
             }
             let reports = screen.take_status_reports();
             let rec = st.reg.terminals.get_mut(&id).expect("live id");
-            screen.set_xtversion(&rec.identity);
             rec.title = screen.title();
             if let Some(on) = relay.win32_input {
                 rec.win32_input = on;
@@ -744,6 +754,9 @@ impl Core {
             (Ok(pid), Some(t)) if t.is_live() => {
                 let restarted = t.reason.is_some();
                 t.pid = Some(pid);
+                if let Some(resume) = &mut t.resume {
+                    resume.set_root(pid);
+                }
                 t.program_started_ms = Some(now_ms());
                 t.reason = None;
                 t.exit_code = None;
@@ -797,6 +810,9 @@ impl Core {
             reason
         };
         if let Some(t) = st.reg.terminals.get_mut(&id) {
+            if let Some(resume) = &mut t.resume {
+                crate::resume::remove_launch(&self.paths.state, resume.launch.take().as_deref());
+            }
             t.first_task_turn = None;
             let change = crate::status::reset(t);
             self.status_changed(st, id, change);
@@ -904,6 +920,11 @@ impl Core {
         {
             let mut st = self.lock();
             for &id in ids {
+                if st.killing.contains(&id)
+                    && let Some(resume) = st.reg.terminals.get_mut(&id).and_then(|t| t.resume.take())
+                {
+                    crate::resume::remove_launch(&self.paths.state, resume.launch.as_deref());
+                }
                 if st
                     .reg
                     .terminals
@@ -959,7 +980,11 @@ impl Core {
                     });
                     // The welcome may be unreadable (the reason relink failed).
                     // Shutdown needs no inventory: the holder ends its own programs.
-                    let hello = proto::json_frame(proto::HELLO, 0, &proto::Hello { version: proto::VERSION });
+                    let hello = proto::json_frame(
+                        proto::HELLO,
+                        0,
+                        &proto::Hello { version: proto::VERSION, tail_offsets: true },
+                    );
                     if io::Write::write_all(&mut stream, &hello).is_ok()
                         && io::Write::write_all(&mut stream, &proto::json_frame(proto::GOODBYE, 0, &mode)).is_ok()
                     {

@@ -38,7 +38,7 @@ pub(super) fn up_to_date(paths: &Paths, release: &str, human: String) -> Result<
         if older(&format!("hc {}", status["version"].as_str().unwrap_or_default()), &this) {
             client::call(&stream, "server.restart", json!({}))?;
             wait_closed(&stream);
-            let stream = client::connect_or_start_explicit(paths)?;
+            let stream = client::connect_replacement(paths)?;
             let status = client::call(&stream, "server.status", json!({}))?;
             out.json["restarted"] = true.into();
             out.json["pid"] = status["pid"].clone();
@@ -96,7 +96,7 @@ pub(super) fn update(paths: &Paths, from: &std::path::Path, force: bool) -> Resu
         None => false,
     };
     let status = if restarted {
-        let stream = client::connect_or_start_explicit(paths)?;
+        let stream = client::connect_replacement(paths)?;
         client::call(&stream, "server.status", json!({}))?
     } else {
         call(paths, "server.status", json!({}))?

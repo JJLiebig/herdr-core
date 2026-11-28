@@ -14,6 +14,22 @@ use std::time::{Duration, Instant};
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-core");
 
 #[test]
+fn resume_helper_checks_the_account_profile_and_keeps_the_pane_environment() {
+    let s = Session::new();
+    let profile = PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+    let dir = profile.join(format!("hc-{}", s.name));
+    std::fs::create_dir(&dir).unwrap();
+    let file = dir.join("resume-1-0123456789abcdef0123456789abcdef.json");
+    let launch = json!({"argv": ["cmd.exe", "/d", "/c", "set USERPROFILE"], "cwd": s.root, "shell": []});
+    std::fs::write(&file, serde_json::to_vec(&launch).unwrap()).unwrap();
+    let override_profile = r"C:\hc fixture\pane profile";
+    let out = Command::new(BIN).args(["__resume"]).arg(&file).env("USERPROFILE", override_profile).output().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains(override_profile), "{out:?}");
+}
+
+#[test]
 fn via_runs_without_a_console_and_passes_the_remote_line_whole() {
     let s = Session::new();
     std::fs::create_dir_all(s.root.join("via dir")).unwrap();
@@ -688,6 +704,29 @@ fn new_terminals_refresh_windows_settings_without_losing_runtime_variables() {
 }
 
 #[test]
+fn an_implicit_windows_start_uses_the_user_environment() {
+    let s = Session::new();
+    let out = cmd(&s.name, &s.root)
+        .env("PATH", r"C:\Windows\System32;HC_STALE_PATH")
+        .env("HC_PROCESS_ONLY", "should-not-leak")
+        .args(["ls"])
+        .output()
+        .unwrap();
+    if let Err(policy) = herdr_core::platform::may_autostart(false) {
+        let error: Value = serde_json::from_slice(&out.stderr).unwrap();
+        assert!(!out.status.success());
+        assert_eq!(error["error"]["message"], policy.message);
+        assert_ne!(s.out(&["server", "status"]).0, 0);
+        return;
+    }
+    assert!(out.status.success(), "{out:?}");
+    let (code, output) = s.out(&["exec", "cmd", "/d", "/c", "set"]);
+    assert_eq!(code, 0, "{output}");
+    assert!(!output.contains("HC_PROCESS_ONLY") && !output.contains("HC_STALE_PATH"), "{output}");
+    assert!(output.contains(&format!("HC_SESSION={}", s.name)), "{output}");
+}
+
+#[test]
 fn terminals_do_not_inherit_the_outer_windows_terminal_identity() {
     let s = Session::new();
     let out = cmd(&s.name, &s.root)
@@ -1132,9 +1171,15 @@ fn a_failed_environment_handoff_still_restarts_the_core() {
     let before = s.json(&["server", "start"])["pid"].clone();
     let blocked = s.root.join("state/herdr-core").join(&s.name).join("restart-env.json");
     std::fs::create_dir(&blocked).unwrap();
-    let (code, _) = s.out(&["server", "restart"]);
-    assert_eq!(code, 0);
+    let restarted = cmd(&s.name, &s.root)
+        .env("HC_RESTART_CALLER_ONLY", "from-the-client")
+        .args(["server", "restart"])
+        .output()
+        .unwrap();
+    assert!(restarted.status.success(), "{restarted:?}");
     assert_ne!(s.json(&["server", "status"])["pid"], before);
+    let (code, output) = s.out(&["exec", "cmd", "/d", "/c", "if defined HC_RESTART_CALLER_ONLY exit /b 42"]);
+    assert_eq!(code, 0, "{output}");
     std::fs::remove_dir(blocked).unwrap();
 }
 

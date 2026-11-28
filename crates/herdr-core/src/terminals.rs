@@ -18,13 +18,16 @@ pub struct Terminal {
     pub labels: BTreeMap<String, String>,
     pub argv: Vec<String>,
     pub cwd: String,
-    /// Replace a lost program with this machine’s shell, in place. Exit with a code and kill remain final.
+    /// Recover a lost terminal in place using its OSC 7577 resume command or a shell. Ordinary exits and kills are final.
     #[serde(default)]
     pub keep: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) recovery: Option<crate::herdr_local::recovery::Recovery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) resume_app: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schemars(skip)]
+    pub(crate) native_recovery: bool,
     /// Last successfully saved UUID session reported by the kept program.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session: Option<String>,
@@ -130,6 +133,9 @@ pub struct Terminal {
     /// Cleanup token for the current program and its descendants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub(crate) resume: Option<crate::resume::Resume>,
     #[serde(default)]
     pub seen_ms: Option<u64>,
     /// The template that started it.
@@ -291,6 +297,7 @@ impl Registry {
                 recovery: None,
                 resume_session: None,
                 resume_app: None,
+                native_recovery: false,
                 last_cwd: None,
                 restart_env: BTreeMap::new(),
                 restart_after_ms: 0,
@@ -326,6 +333,7 @@ impl Registry {
                 asked: None,
                 unreported: 0,
                 scope: None,
+                resume: None,
                 printed: 0,
                 full_screen: false,
                 win32_input: false,
@@ -374,11 +382,17 @@ impl Registry {
                 t.last_cwd = Some(f.cwd.clone());
             }
             if pending {
+                if let Some(resume) = &mut t.resume {
+                    let drop_root = reason == "signaled"
+                        && signal.is_some_and(|signal| !crate::platform::resume_shutdown_signal(signal));
+                    resume.lost(t.program_started_ms, now_ms, drop_root);
+                }
                 t.schedule_restart(now_ms);
                 t.pid = None;
                 t.holder = None;
             } else {
                 t.reply_grants = Default::default();
+                t.resume = None;
             }
             t.exit_code = code;
             t.signal = signal;
@@ -449,6 +463,7 @@ const PRIVATE: &[&str] = &[
     "asked",
     "unreported",
     "scope",
+    "resume",
     "holder",
     "printed",
     "full_screen",
@@ -459,6 +474,7 @@ const PRIVATE: &[&str] = &[
     "restart_env",
     "recovery",
     "resume_app",
+    "native_recovery",
     "restart_after_ms",
     "restart_delay_ms",
     "program_started_ms",
